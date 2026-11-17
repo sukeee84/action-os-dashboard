@@ -14,7 +14,7 @@
   --bg:#f6f5f2; --panel:#ffffff; --panel2:#f0efeb; --line:#e3e1db; --text:#1d1d1f; --sub:#6b6a66; --faint:#9a9893;
   --accent:#2f6fde; --accent-soft:#e6eefc;
   --red:#d33f3f; --red-soft:#fbe9e9; --amber:#b7791f; --amber-soft:#fbf1df; --green:#2e8b57; --green-soft:#e4f3ea;
-  --c-salon:#c2577a; --c-dev:#3f6fd1; --c-kaitori:#c7862b; --c-kojin:#3a9a6a; --c-misc:#8a8780;
+  --c-salon:#c2577a; --c-dev:#3f6fd1; --c-kaitori:#c7862b; --c-kojin:#3a9a6a; --c-misc:#8a8780; --c-p5:#7a5cc7; --c-p6:#2a9aa8; --c-p7:#b5583a;
   --shadow:0 1px 2px rgba(0,0,0,.05),0 2px 8px rgba(0,0,0,.04);
   --radius:14px;
 }
@@ -23,7 +23,7 @@
     --bg:#16171a; --panel:#1f2024; --panel2:#26272c; --line:#33343a; --text:#ececee; --sub:#a3a3aa; --faint:#75757d;
     --accent:#6b9cff; --accent-soft:#22304d;
     --red:#ff6b6b; --red-soft:#3a2224; --amber:#f0b44c; --amber-soft:#3a3020; --green:#5cc98a; --green-soft:#1f3328;
-    --c-salon:#e07fa0; --c-dev:#6f98f0; --c-kaitori:#e5a64f; --c-kojin:#5cc98a; --c-misc:#a3a19a;
+    --c-salon:#e07fa0; --c-dev:#6f98f0; --c-kaitori:#e5a64f; --c-kojin:#5cc98a; --c-misc:#a3a19a; --c-p5:#a58cf0; --c-p6:#4fc3d0; --c-p7:#e08a6a;
     --shadow:0 1px 2px rgba(0,0,0,.4);
   }
 }
@@ -146,6 +146,10 @@ header{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 8
 .subl{display:flex;flex-direction:column;gap:6px}
 .subl .row input{flex:1}
 .hint{font-size:12px;color:var(--sub);line-height:1.6}
+.catrow .dot{flex:none;width:10px;height:10px;border-radius:50%}
+.catrow .cname{flex:1;padding:10px 12px;font-weight:600}
+.catrow input{flex:1}
+.iconbtn:disabled{opacity:.3;cursor:default}
 .hint code{background:var(--panel2);padding:1px 5px;border-radius:5px;font-size:11px}
 
 /* トースト */
@@ -176,8 +180,11 @@ header{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 8
 <script>
 'use strict';
 // ===== 定数 =====
-const CATS = ['サロン','開発案件','買取店','個人','未分類'];
-const CAT_COLOR = {'サロン':'--c-salon','開発案件':'--c-dev','買取店':'--c-kaitori','個人':'--c-kojin','未分類':'--c-misc'};
+const INBOX = 'インボックス';
+// カテゴリは todo.md の「## 見出し」そのもの。並び順もファイルの順
+const catNames = () => S.sections.map(s=>s.name);
+const PALETTE = ['--c-dev','--c-salon','--c-kaitori','--c-kojin','--c-p5','--c-p6','--c-p7'];
+const catColor = name => name===INBOX ? '--c-misc' : PALETTE[(catNames().filter(n=>n!==INBOX).indexOf(name)) % PALETTE.length] || '--c-misc';
 const WD = ['日','月','火','水','木','金','土'];
 const LS = {token:'aos.token', repo:'aos.repo', tab:'aos.tab'};
 const DEFAULT_REPO = 'sukeee84/action-os';
@@ -243,8 +250,9 @@ function parseTodo(text){
     }
     if(line.trim()) cur.items.push({raw:line});
   }
-  for(const c of CATS) if(!sections.find(s=>s.name===c)) sections.push({name:c, items:[]});
-  sections.sort((a,b)=>{ const ia=CATS.indexOf(a.name), ib=CATS.indexOf(b.name); return (ia<0?99:ia)-(ib<0?99:ib); });
+  // インボックスは必ず先頭に置く
+  const ib=sections.findIndex(s=>s.name===INBOX);
+  if(ib<0) sections.unshift({name:INBOX, items:[]}); else if(ib>0) sections.unshift(sections.splice(ib,1)[0]);
   return sections;
 }
 function serializeTodo(sections){
@@ -445,13 +453,47 @@ function removeSomeday(text, promoteCat){
   });
 }
 function importIssue(iss, dest, due, prio){
-  const text=iss.title.trim();
+  const picked=pickCategory(iss.title); const text = picked.cat===dest ? picked.text : iss.title.trim();
   const addFn=s=>{ s.find(x=>x.name===dest).items.push({text,due:due||null,prio:!!prio,subs:[]}); };
   enqueue('取り込みました', ()=>{ S.issues=S.issues.filter(i=>i.number!==iss.number); if(dest==='someday') S.someday.push(text); else addFn(S.sections); }, async ()=>{
     if(dest==='someday') await somedayFile(pushSome(text), `inbox: Issue#${iss.number} ${text}をいつかやるに追加`);
     else await opsTodo(addFn, `inbox: Issue#${iss.number} ${text}を${dest}に追加`);
     await S.be.closeIssue(iss.number);
   });
+}
+
+function badCatName(n){
+  if(!n) return 'カテゴリ名を入れてください';
+  if(/[#\n]/.test(n)) return 'カテゴリ名に # は使えません';
+  if(catNames().includes(n)) return '同じ名前のカテゴリがあります';
+  return null;
+}
+function addCategory(name){
+  const fn=s=>{ if(s.find(x=>x.name===name)) return; s.push({name, items:[]}); };
+  enqueue(`カテゴリ「${name}」を追加しました`, ()=>fn(S.sections), ()=>opsTodo(fn, `dashboard: カテゴリ「${name}」を追加`));
+}
+function renameCategory(from,to){
+  const fn=s=>{ const sec=s.find(x=>x.name===from); if(!sec || s.find(x=>x.name===to)) return false; sec.name=to; };
+  enqueue('カテゴリ名を変更しました', ()=>fn(S.sections), ()=>opsTodo(fn, `dashboard: カテゴリ「${from}」を「${to}」に変更`));
+}
+function deleteCategory(name){
+  const fn=s=>{ const i=s.findIndex(x=>x.name===name); if(i<0||name===INBOX) return false; const [sec]=s.splice(i,1); s.find(x=>x.name===INBOX).items.push(...sec.items); };
+  enqueue(`カテゴリ「${name}」を削除しました`, ()=>fn(S.sections), ()=>opsTodo(fn, `dashboard: カテゴリ「${name}」を削除`));
+}
+function moveCategory(name){
+  const fn=s=>{ const i=s.findIndex(x=>x.name===name); if(i<=1) return false; [s[i-1],s[i]]=[s[i],s[i-1]]; };
+  enqueue('並び順を変更しました', ()=>fn(S.sections), ()=>opsTodo(fn, `dashboard: カテゴリ「${name}」の並び順を変更`));
+}
+// 「サロン：〇〇」「〇〇 #サロン」のようにカテゴリ名が書かれていたら、そのカテゴリと本文に分ける
+function pickCategory(title){
+  const names=catNames().filter(n=>n!==INBOX);
+  for(const n of names){
+    const pre=new RegExp('^\\s*'+n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*[:：、,]\\s*');
+    if(pre.test(title)) return {cat:n, text:title.replace(pre,'').trim()};
+    const tag='#'+n;
+    if(title.includes(tag)) return {cat:n, text:title.replace(tag,'').replace(/\s+/g,' ').trim()};
+  }
+  return {cat:null, text:title.trim()};
 }
 
 // ===== 集計 =====
@@ -501,7 +543,7 @@ function taskRow(cat, t, opts={}){
   const ref = opts.parent!==undefined ? {cat, text:t.text, parent:opts.parent} : {cat, text:t.text};
   const di=dueInfo(t.due);
   const meta=[];
-  if(opts.showCat) meta.push(`<span class="chip cat" style="--cc:var(${CAT_COLOR[cat]||'--c-misc'})"><i></i>${esc(cat)}</span>`);
+  if(opts.showCat) meta.push(`<span class="chip cat" style="--cc:var(${catColor(cat)})"><i></i>${esc(cat)}</span>`);
   if(di) meta.push(`<span class="chip ${di.cls}">${icon('cal')}${esc(di.label)}</span>`);
   if(t.prio) meta.push(`<span class="chip prio">${icon('flag')}高</span>`);
   if(!opts.parent && t.subs && t.subs.length) meta.push(`<span class="chip">サブ ${t.subs.length}件</span>`);
@@ -521,7 +563,7 @@ function viewBoard(){
     if(f) rows=rows.filter(r=>f.fn(r.t));
     rows.sort(sortTasks);
     if(f && !rows.length) return '';
-    return `<section class="col" style="--cc:var(${CAT_COLOR[s.name]||'--c-misc'})">
+    return `<section class="col" style="--cc:var(${catColor(s.name)})">
       <div class="colhd"><span class="name">${esc(s.name)}</span><span class="count">${rows.length}</span></div>
       <div class="list">${rows.length? rows.map(r=>taskRow(r.cat,r.t)).join('') : '<div class="empty">タスクはありません</div>'}</div>
       <form class="quick" data-act="quick" data-cat="${esc(s.name)}"><input name="q" placeholder="＋ ${esc(s.name)}にタスクを追加" autocomplete="off" enterkeyhint="done" ></form>
@@ -540,7 +582,7 @@ function viewTimeline(){
 function viewSomeday(){
   return `<form class="quick" data-act="someday-add" style="padding:0 0 12px"><input name="q" placeholder="＋ いつかやること・アイデアを追加" autocomplete="off" enterkeyhint="done" ></form>
   <div class="plain">${S.someday.length? S.someday.map(x=>`<div class="prow"><div class="t">${esc(x)}</div>
-    <select class="btn sm" data-act="some-promote" data-text="${esc(x)}" ><option value="">やることへ移す…</option>${CATS.map(c=>`<option>${c}</option>`).join('')}</select>
+    <select class="btn sm" data-act="some-promote" data-text="${esc(x)}" ><option value="">やることへ移す…</option>${catNames().map(c=>`<option>${esc(c)}</option>`).join('')}</select>
     <button class="btn sm danger" data-act="some-del" data-text="${esc(x)}" >削除</button></div>`).join('') : '<div class="empty">まだありません</div>'}</div>`;
 }
 function viewDone(){
@@ -551,10 +593,10 @@ function viewDone(){
 }
 function viewInbox(){
   if(!S.issues || !S.issues.length) return '';
-  const guess=t=>/サロン|エステ|セラピスト|施術|予約|ささやき/.test(t)?'サロン':/買取|査定|仕入/.test(t)?'買取店':/開発|実装|案件|システム|アプリ|GAS/.test(t)?'開発案件':/いつか|アイデア/.test(t)?'someday':'未分類';
+  const guess=i=>{ const c=pickCategory(i.title); return c.cat || (/いつか|アイデア/.test(i.title+i.body)?'someday':INBOX); };
   return `<div class="inbox"><h3>📥 Inbox（未処理 ${S.issues.length}件）</h3>${S.issues.map(i=>`<form class="ibrow" data-act="import" data-num="${i.number}">
     <div class="t"><div>${esc(i.title)}</div>${i.body?`<div class="b">${esc(i.body.slice(0,200))}</div>`:''}</div>
-    <select name="dest" class="btn sm">${CATS.map(c=>`<option ${guess(i.title+i.body)===c?'selected':''}>${c}</option>`).join('')}<option value="someday" ${guess(i.title+i.body)==='someday'?'selected':''}>いつかやる</option></select>
+    <select name="dest" class="btn sm">${catNames().map(c=>`<option ${guess(i)===c?'selected':''}>${esc(c)}</option>`).join('')}<option value="someday" ${guess(i)==='someday'?'selected':''}>いつかやる</option></select>
     <input type="date" name="due" class="btn sm">
     <button class="btn sm pri" >取り込む</button></form>`).join('')}</div>`;
 }
@@ -598,13 +640,13 @@ function render(){
 // ===== モーダル =====
 function viewModal(){
   const m=S.modal;
-  if(m.type==='settings') return `<div class="ov" data-act="close-ov"><div class="modal">${settingsForm(true)}</div></div>`;
+  if(m.type==='settings') return `<div class="ov" data-act="close-ov"><div class="modal">${catManager()}${settingsForm(true)}</div></div>`;
   const isEdit=m.type==='edit', d=m.draft;
   const quickDates=[['今日',todayStr()],['明日',addDays(todayStr(),1)],['金曜',nextWeekday(5)],['来週月曜',nextWeekday(1,1)],['なし','']];
   return `<div class="ov" data-act="close-ov"><form class="modal" data-act="save-task">
     <h2>${isEdit?(m.ref.parent!==undefined?'サブタスクを編集':'タスクを編集'):'タスクを追加'}</h2>
     <div class="field"><label>内容</label><input class="inp" name="text" value="${esc(d.text)}" required autocomplete="off" ${isEdit?'':'autofocus'}></div>
-    ${m.ref&&m.ref.parent!==undefined?'':`<div class="field"><label>カテゴリ</label><div class="seg">${CATS.map(c=>`<button type="button" class="${d.cat===c?'on':''}" data-act="set" data-f="cat" data-v="${c}">${c}</button>`).join('')}</div></div>`}
+    ${m.ref&&m.ref.parent!==undefined?'':`<div class="field"><label>カテゴリ</label><div class="seg">${catNames().map(c=>`<button type="button" class="${d.cat===c?'on':''}" data-act="set" data-f="cat" data-v="${esc(c)}">${esc(c)}</button>`).join('')}</div></div>`}
     <div class="field"><label>期限</label>
       <input class="inp" type="date" name="due" value="${esc(d.due||'')}">
       <div class="dates">${quickDates.map(([l,v])=>`<button type="button" class="btn sm" data-act="set" data-f="due" data-v="${v}">${l}${v?` <span style="color:var(--faint)">${mdw(v)}</span>`:''}</button>`).join('')}</div>
@@ -622,6 +664,18 @@ function viewModal(){
       <button class="btn pri" >${isEdit?'保存':'追加'}</button>
     </div>
   </form></div>`;
+}
+function catManager(){
+  const names=catNames();
+  return `<div class="field"><label>カテゴリ</label><div class="hint" style="margin-bottom:8px">何も指定しないタスクは「${INBOX}」に入ります。削除したカテゴリのタスクは${INBOX}に戻ります。</div>
+    <div class="subl">${names.map((n,i)=>`<div class="row catrow">
+      <span class="dot" style="background:var(${catColor(n)})"></span>
+      ${n===INBOX?`<span class="cname">${esc(n)}</span><span class="hint">固定</span>`:`<input class="inp" data-catname="${esc(n)}" value="${esc(n)}" autocomplete="off">
+      <button type="button" class="iconbtn" data-act="cat-up" data-name="${esc(n)}" title="上へ" ${i<=1?'disabled':''}>${icon('up')}</button>
+      <button type="button" class="iconbtn" data-act="cat-del" data-name="${esc(n)}" title="削除">${icon('x')}</button>`}
+    </div>`).join('')}
+    <form class="row" data-act="cat-add"><input class="inp" name="q" placeholder="新しいカテゴリ名（例：サロン）" autocomplete="off" enterkeyhint="done"><button class="btn pri">追加</button></form>
+    </div></div><hr style="border:0;border-top:1px solid var(--line);margin:18px 0">`;
 }
 function settingsForm(inModal){
   return `<form data-act="save-settings">
@@ -666,7 +720,7 @@ document.addEventListener('click', async e=>{
     case 'reload': if(qRunning||Q.length){ toast('保存中です。少し待ってから更新してください'); break; } loadAll(); break;
     case 'settings': S.modal={type:'settings'}; render(); break;
     case 'logout': safeSet(LS.token,null); S.be=null; S.modal=null; render(); break;
-    case 'add': S.modal={type:'add', draft:{text:'', cat:'未分類', due:'', prio:false, subs:[]}}; render(); break;
+    case 'add': S.modal={type:'add', draft:{text:'', cat:INBOX, due:'', prio:false, subs:[]}}; render(); break;
     case 'close': S.modal=null; render(); break;
     case 'done': { const row=el.closest('.task'); row&&(row.style.opacity='.35'); completeTask(ref); break; }
     case 'edit': openEdit(ref); break;
@@ -675,11 +729,15 @@ document.addEventListener('click', async e=>{
     case 'sub-del': { syncDraft(); S.modal.draft.subs.splice(+el.dataset.i,1); render(); break; }
     case 'del': { const r=S.modal.ref; if(!confirm(`「${r.text}」を削除しますか？（完了ログには残りません）`)) return; S.modal=null; deleteTask(r); break; }
     case 'to-someday': { const r=S.modal.ref; S.modal=null; toSomeday(r); break; }
+    case 'cat-up': moveCategory(el.dataset.name); break;
+    case 'cat-del': { const n=el.dataset.name; const cnt=(S.sections.find(x=>x.name===n)?.items.length)||0;
+      if(!confirm(`カテゴリ「${n}」を削除しますか？`+(cnt?`\n中のタスク${cnt}件は${INBOX}に移ります。`:''))) return; deleteCategory(n); break; }
     case 'some-del': if(confirm(`「${el.dataset.text}」を削除しますか？`)) removeSomeday(el.dataset.text); break;
   }
 });
 document.addEventListener('change', e=>{
   const el=e.target;
+  if(el.dataset.catname!==undefined){ const from=el.dataset.catname, to=el.value.trim(); if(to===from) return; const err=badCatName(to); if(err){ el.value=from; return toast(err,true); } renameCategory(from,to); return; }
   if(el.dataset.act==='some-promote' && el.value) removeSomeday(el.dataset.text, el.value);
 });
 document.addEventListener('keydown', e=>{
@@ -689,6 +747,7 @@ document.addEventListener('keydown', e=>{
 document.addEventListener('submit', async e=>{
   const f=e.target; const a=f.dataset.act; e.preventDefault();
   if(a==='quick'){ const v=f.q.value.trim(); if(!v) return; f.q.value=''; addTask(f.dataset.cat, {text:v,due:null,prio:false}); }
+  if(a==='cat-add'){ const v=f.q.value.trim(); if(!v) return; const err=badCatName(v); if(err) return toast(err,true); f.q.value=''; addCategory(v); return; }
   if(a==='someday-add'){ const v=f.q.value.trim(); if(!v) return; f.q.value=''; addSomeday(v); }
   if(a==='import'){ const iss=S.issues.find(i=>i.number===+f.dataset.num); importIssue(iss, f.dest.value, f.due.value); }
   if(a==='save-task'){
