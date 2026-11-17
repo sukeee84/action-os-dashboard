@@ -75,6 +75,13 @@ header{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 8
 .col{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
 .colhd{display:flex;align-items:center;gap:8px;padding:12px 14px 10px;border-top:4px solid var(--cc)}
 .colhd .name{font-weight:700}
+.colhd .iconbtn.sm{width:26px;height:26px;border:0;background:transparent;color:var(--faint)}
+.colhd .iconbtn.sm:hover{color:var(--red);background:var(--red-soft)}
+.colhd .iconbtn.sm svg{width:14px;height:14px}
+.addcat{background:transparent;border:2px dashed var(--line);box-shadow:none;padding:6px}
+.addcat input{width:100%;border:0;background:transparent;padding:10px;font-size:15px;font-weight:600}
+.addcat input:focus{outline:none}
+.addcat:focus-within{border-color:var(--accent)}
 .colhd .count{font-size:12px;color:var(--sub);background:var(--panel2);border-radius:999px;padding:1px 8px}
 .list{padding:2px 6px 6px}
 .empty{color:var(--faint);font-size:13px;padding:6px 10px 10px}
@@ -564,11 +571,12 @@ function viewBoard(){
     rows.sort(sortTasks);
     if(f && !rows.length) return '';
     return `<section class="col" style="--cc:var(${catColor(s.name)})">
-      <div class="colhd"><span class="name">${esc(s.name)}</span><span class="count">${rows.length}</span></div>
+      <div class="colhd"><span class="name">${esc(s.name)}</span><span class="count">${rows.length}</span><span class="sp"></span>${s.name!==INBOX?`<button class="iconbtn sm" data-act="cat-del" data-name="${esc(s.name)}" title="このカテゴリを削除">${icon('x')}</button>`:''}</div>
       <div class="list">${rows.length? rows.map(r=>taskRow(r.cat,r.t)).join('') : '<div class="empty">タスクはありません</div>'}</div>
       <form class="quick" data-act="quick" data-cat="${esc(s.name)}"><input name="q" placeholder="＋ ${esc(s.name)}にタスクを追加" autocomplete="off" enterkeyhint="done" ></form>
     </section>`;
-  }).join('') || '<div class="empty">該当するタスクはありません</div>'}</div>`;
+  }).join('') || '<div class="empty">該当するタスクはありません</div>'}
+    ${f?'':`<form class="col addcat" data-act="cat-add"><input name="q" placeholder="＋ カテゴリを追加" autocomplete="off" enterkeyhint="done"></form>`}</div>`;
 }
 function viewTimeline(){
   const f=S.filter&&FILTERS[S.filter];
