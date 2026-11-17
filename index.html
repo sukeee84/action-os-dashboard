@@ -197,6 +197,33 @@ main.wrap{max-width:880px}
 .flat .grouphd{padding:14px 2px 2px}
 .flat .grouphd:first-child{padding-top:0}
 .chip.cat{order:-1}
+.runbtn{flex:none;width:30px;height:30px;border-radius:50%;border:1px solid var(--line);background:transparent;color:var(--faint);display:flex;align-items:center;justify-content:center;padding:0}
+.runbtn svg{width:13px;height:13px;margin-left:2px}
+.runbtn:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+.chip.run{cursor:pointer}
+.chip.run svg{width:10px;height:10px}
+.chip.run.wait{background:var(--panel2);color:var(--sub)}
+.chip.run.busy{background:var(--accent-soft);color:var(--accent)}
+.chip.run.busy svg{animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.3}}
+.chip.run.review{background:var(--amber-soft);color:var(--amber);font-weight:600}
+.chip.run.ok{background:var(--green-soft);color:var(--green);font-weight:600}
+.chip.run.ng{background:var(--red-soft);color:var(--red);font-weight:600}
+.runtask{font-weight:600;margin-bottom:14px;padding:10px 12px;background:var(--panel2);border-radius:10px}
+.runs{display:flex;flex-direction:column;gap:12px}
+.runcard{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:var(--shadow)}
+.runhd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.runhd .rtitle{font-weight:700;flex:1;min-width:0}
+.runhd .rcat{font-size:12px;color:var(--faint)}
+.mdbody{white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.7;background:var(--panel2);border-radius:10px;padding:12px 14px;margin:8px 0;max-height:60vh;overflow:auto}
+.mdbody .mdh{font-weight:700;font-size:14px;color:var(--text);margin-top:10px}
+.mdbody .mdh:first-child{margin-top:0}
+.mdbody .mdgap{height:6px}
+.mdbody code,.runcard code{background:var(--bg);padding:1px 5px;border-radius:5px;font-size:12px;word-break:break-all}
+.mdbody .send{color:var(--red);font-weight:700}
+.runcard .err{color:var(--red);font-size:13px;white-space:pre-wrap;margin:6px 0}
+.runcard form textarea{margin-top:6px}
+.runcard details{margin:6px 0}
 @media (max-width:640px){
   .tbody{flex-direction:column;align-items:flex-start;gap:4px}
   .meta{justify-content:flex-start}
@@ -238,6 +265,7 @@ const ICON = {
   flag:'<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
   x:'<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   up:'<polyline points="18 15 12 9 6 15"/>',
+  play:'<polygon points="6 4 20 12 6 20 6 4"/>',
 };
 const icon = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICON[n]}</svg>`;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -366,7 +394,7 @@ function demoBackend(){
 
 // ===== 状態 =====
 const S = {
-  be:null, sections:[], someday:[], done:{}, issues:[], loading:false,
+  be:null, sections:[], someday:[], done:{}, issues:[], runs:[], loading:false,
   tab: safeGet(LS.tab) || 'board', filter:null, modal:null, toast:null, loadedAt:0,
 };
 function safeGet(k){ try{ return localStorage.getItem(k); }catch{ return null; } }
@@ -380,10 +408,12 @@ async function loadAll(quiet){
   S.loading=true; render();
   try{
     const ym=monthOf(todayStr());
-    const [todo, some, d1, d2, iss] = await Promise.all([
+    const [todo, some, d1, d2, iss, runs] = await Promise.all([
       S.be.read('todo.md'), S.be.read('someday.md'), S.be.read(`done/${ym}.md`), S.be.read(`done/${prevMonth(ym)}.md`),
       S.be.issues().catch(e=>{ console.warn(e); return null; }),
+      S.be.read('runs.json').catch(()=>null),
     ]);
+    S.runs=parseRuns(runs&&runs.text);
     S.sections=parseTodo(todo?todo.text:'# TODO\n');
     S.someday=parseSomeday(some?some.text:'');
     S.done={[ym]:d1?parseDone(d1.text):[], [prevMonth(ym)]:d2?parseDone(d2.text):[]};
@@ -535,6 +565,85 @@ function pickCategory(title){
   return {cat:null, text:title.trim()};
 }
 
+// ===== Claude で実行（Mac の実行係とは runs.json でやり取りする） =====
+const RUN_ST = {
+  queued:{label:'計画待ち', cls:'wait', attn:false, active:true},
+  planning:{label:'計画中', cls:'busy', attn:false, active:true},
+  review:{label:'承認待ち', cls:'review', attn:true},
+  approved:{label:'実行待ち', cls:'wait', attn:false, active:true},
+  running:{label:'実行中', cls:'busy', attn:false, active:true},
+  done:{label:'実行済み', cls:'ok', attn:true},
+  failed:{label:'失敗', cls:'ng', attn:true},
+  cancelled:{label:'取り消し', cls:'', attn:false},
+  closed:{label:'完了', cls:'', attn:false},
+};
+function parseRuns(text){ try{ const d=JSON.parse(text||'{}'); return Array.isArray(d.runs)?d.runs.filter(r=>RUN_ST[r.status]):[]; }catch{ return []; } }
+const runOpen = r => r.status!=='cancelled' && r.status!=='closed';
+function runFor(cat, text){ for(let i=S.runs.length-1;i>=0;i--){ const r=S.runs[i]; if(r.cat===cat && r.task===text && runOpen(r)) return r; } return null; }
+const nowJst = () => new Date(Date.now()+9*3600e3).toISOString().slice(0,19);
+function runsFile(fn, msg){
+  return mutateFile('runs.json', t=>{ let d; try{ d=JSON.parse(t||'{}'); }catch{ d={}; } if(!Array.isArray(d.runs)) d.runs=[]; if(fn(d.runs)===false) return false; d.runs=d.runs.slice(-60); return JSON.stringify(d,null,1)+'\n'; }, msg, '{"runs":[]}\n');
+}
+const patchRun = (id, patch) => runs => { const r=runs.find(x=>x.id===id); if(!r) return false; Object.assign(r, patch, {updated:nowJst()}); };
+function startRun(ref, note){
+  const f=findTask(S.sections, ref); if(!f) return;
+  const run={id:'r'+Date.now().toString(36)+Math.random().toString(36).slice(2,6), task:ref.text, cat:ref.cat, due:f.task.due||null,
+    subs:(f.task.subs||[]).map(x=>x.text), note:note||null, status:'queued', created:nowJst(), updated:nowJst()};
+  enqueue('計画を依頼しました（Mac で始まります）', ()=>S.runs.push({...run}), ()=>runsFile(runs=>{ runs.push(run); }, `dashboard: 「${ref.text}」の実行を依頼`));
+}
+function setRun(id, patch, label, msg){
+  enqueue(label, ()=>patchRun(id,patch)(S.runs), ()=>runsFile(patchRun(id,patch), msg));
+}
+// 計画や実行が進んでいる間は runs.json だけをこまめに読み直す
+async function pollRuns(){
+  if(!S.be || qRunning || Q.length || document.visibilityState!=='visible') return;
+  if(!S.runs.some(r=>RUN_ST[r.status]?.active)) return;
+  try{
+    const f=await S.be.read('runs.json'); const next=parseRuns(f&&f.text);
+    if(JSON.stringify(next)!==JSON.stringify(S.runs)){
+      const was=Object.fromEntries(S.runs.map(r=>[r.id,r.status]));
+      S.runs=next;
+      const changed=next.find(r=>was[r.id] && was[r.id]!==r.status && RUN_ST[r.status].attn);
+      if(changed) toast(`「${changed.task}」が${RUN_ST[changed.status].label}になりました`);
+      if(!S.modal && !document.activeElement?.closest?.('form,textarea')) render();
+    }
+  }catch(e){ console.warn(e); }
+}
+function md(text){
+  return esc(text||'').trim().split('\n').map(l=>{
+    if(/^#{1,4}\s/.test(l)) return `<div class="mdh">${l.replace(/^#+\s*/,'')}</div>`;
+    if(!l.trim()) return '<div class="mdgap"></div>';
+    return '<div>'+l.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>').replace(/【送信】/g,'<span class="send">【送信】</span>')+'</div>';
+  }).join('');
+}
+function viewRuns(){
+  const list=S.runs.filter(runOpen).slice().reverse();
+  const hist=S.runs.filter(r=>!runOpen(r)).slice(-10).reverse();
+  const card=r=>{
+    const st=RUN_ST[r.status];
+    const body = r.status==='done' ? md(r.result) : (r.plan? md(r.plan) : '');
+    const ctl = {
+      queued:`<div class="hint">Mac の Claude Code が計画を作ります。Mac が起動していれば1分ほどで始まります。</div><div class="actions"><button class="btn sm danger" data-act="run-cancel" data-id="${r.id}">取り消す</button></div>`,
+      planning:`<div class="hint">計画と下書きを作っています（数分かかることがあります）。</div>`,
+      approved:`<div class="hint">承認済み。Mac で実行が始まるのを待っています。</div>`,
+      running:`<div class="hint">計画どおりに作業しています。</div>`,
+      review:`<form data-act="run-approve" data-id="${r.id}"><textarea class="inp" name="note" rows="2" placeholder="直してほしい点や、実行時の追加指示（任意）"></textarea>
+        <div class="actions"><button type="button" class="btn sm danger left" data-act="run-cancel" data-id="${r.id}">取り消す</button>
+        <button type="button" class="btn sm" data-act="run-replan" data-id="${r.id}">指示を反映して計画し直す</button>
+        <button class="btn sm pri">承認して実行</button></div></form>`,
+      done:`<div class="actions"><button class="btn sm" data-act="run-close" data-id="${r.id}">閉じる</button><button class="btn sm pri" data-act="run-complete" data-id="${r.id}">タスクを完了にする</button></div>`,
+      failed:`<div class="err">${esc(r.error||'失敗しました')}</div><div class="actions"><button class="btn sm" data-act="run-close" data-id="${r.id}">閉じる</button><button class="btn sm pri" data-act="run-retry" data-id="${r.id}">もう一度</button></div>`,
+    }[r.status]||'';
+    return `<div class="runcard"><div class="runhd"><span class="chip run ${st.cls}">${icon('play')}${st.label}</span><span class="rtitle">${esc(r.task)}</span><span class="rcat">${esc(r.cat||'')}</span></div>
+      ${r.note?`<div class="hint">補足：${esc(r.note)}</div>`:''}
+      ${body?`<div class="mdbody">${body}</div>`:''}
+      ${r.session?`<details class="hint"><summary>Mac で続きを直接触るには</summary><code>cd ~/dev/salon-os && claude --resume ${esc(r.session)}</code></details>`:''}
+      ${ctl}</div>`;
+  };
+  return `<div class="runs">${list.length? list.map(card).join('') : '<div class="plain"><div class="empty">実行中・確認待ちのものはありません。タスクの右の ▶ から Claude に任せられます。</div></div>'}
+    ${hist.length?`<div class="monthhd">最近の履歴</div><div class="plain">${hist.map(r=>`<div class="prow"><div class="t">${esc(r.task)}</div><div class="d">${RUN_ST[r.status].label}</div></div>`).join('')}</div>`:''}</div>`;
+}
+
 // ===== 集計 =====
 function allTasks(){
   const out=[];
@@ -586,11 +695,13 @@ function taskRow(cat, t, opts={}){
   if(di) meta.push(`<span class="chip ${di.cls}">${icon('cal')}${esc(di.label)}</span>`);
   if(t.prio) meta.push(`<span class="chip prio">${icon('flag')}高</span>`);
   if(!opts.parent && t.subs && t.subs.length) meta.push(`<span class="chip">サブ ${t.subs.length}件</span>`);
+  const run = opts.parent===undefined ? runFor(cat, t.text) : null;
+  if(run) meta.push(`<span class="chip run ${RUN_ST[run.status].cls}" data-act="tab" data-k="runs">${icon('play')}${RUN_ST[run.status].label}</span>`);
   let h=`<div class="task${opts.parent!==undefined?' sub':''}">
     <button class="chk" title="完了にする" data-act="done" data-ref='${esc(JSON.stringify(ref))}' >${icon('check')}</button>
     <div class="tbody" data-act="edit" data-ref='${esc(JSON.stringify(ref))}'>
       <div class="ttext">${esc(t.text)}</div>${meta.length?`<div class="meta">${meta.join('')}</div>`:''}
-    </div></div>`;
+    </div>${opts.parent===undefined&&!run?`<button class="runbtn" title="Claude で実行" data-act="run-open" data-ref='${esc(JSON.stringify(ref))}'>${icon('play')}</button>`:''}</div>`;
   if(!opts.parent && !opts.flat) for(const st of t.subs) h+=taskRow(cat, st, {parent:t.text});
   return h;
 }
@@ -645,7 +756,7 @@ function render(){
   if(!S.be){ app.innerHTML=viewSetup(); return; }
   const st=stats(); const t=todayStr();
   const doneCnt=(S.done[monthOf(t)]||[]).length;
-  const tabs=[['board','カテゴリ別',st.total],['timeline','期限順',st.total],['someday','いつかやる',S.someday.length],['done','完了',doneCnt]];
+  const tabs=[['board','カテゴリ別',st.total],['timeline','期限順',st.total],['someday','いつかやる',S.someday.length],['runs','実行',S.runs.filter(r=>RUN_ST[r.status]?.attn).length],['done','完了',doneCnt]];
   const statCard=(k,n,l,cls)=>`<button class="stat ${cls} ${S.filter===k?'on':''}" data-act="filter" data-k="${k}"><div class="n">${n}</div><div class="l">${l}</div></button>`;
   const showStats = S.tab==='board'||S.tab==='timeline';
   // 入力中の内容とフォーカスを保つ
@@ -668,7 +779,7 @@ function render(){
       <div class="tabs">${tabs.map(([k,l,n])=>`<button class="tab ${S.tab===k?'on':''}" data-act="tab" data-k="${k}">${l}<span class="cnt">${n}</span></button>`).join('')}</div>
       ${showStats&&S.filter?`<button class="filterchip" data-act="filter" data-k="${S.filter}">${esc(FILTERS[S.filter].label)}で絞り込み中 ${icon('x').replace('<svg','<svg width="12" height="12"')}</button>`:''}
     </div>
-    ${S.tab==='board'?viewBoard():S.tab==='timeline'?viewTimeline():S.tab==='someday'?viewSomeday():viewDone()}
+    ${S.tab==='board'?viewBoard():S.tab==='timeline'?viewTimeline():S.tab==='someday'?viewSomeday():S.tab==='runs'?viewRuns():viewDone()}
   </main>
   <button class="fab" data-act="add" title="タスクを追加">${icon('plus')}</button>
   ${S.modal?viewModal():''}`;
@@ -679,6 +790,13 @@ function render(){
 // ===== モーダル =====
 function viewModal(){
   const m=S.modal;
+  if(m.type==='run') return `<div class="ov" data-act="close-ov"><form class="modal" data-act="run-start">
+    <h2>Claude で実行</h2>
+    <div class="runtask">${esc(m.ref.text)}</div>
+    <div class="field"><label>補足の指示（任意）</label><textarea class="inp" name="note" rows="3" placeholder="例：先月と同じ形式で。送る前に必ず見せて"></textarea></div>
+    <div class="hint">Mac の Claude Code がサロンOSのフォルダで、まず<b>計画と下書きだけ</b>を作ります（ファイル変更や送信はしません）。<br>計画は「実行」タブに届きます。内容を見て承認すると、実際の作業を始めます。<br>Mac が起動していないときは、起動したときに始まります。</div>
+    <div class="actions"><button type="button" class="btn" data-act="close">キャンセル</button><button class="btn pri">${icon('play').replace('<svg','<svg width="14" height="14"')} 計画を作る</button></div>
+  </form></div>`;
   if(m.type==='settings') return `<div class="ov" data-act="close-ov"><div class="modal">${catManager()}${settingsForm(true)}</div></div>`;
   const isEdit=m.type==='edit', d=m.draft;
   const quickDates=[['今日',todayStr()],['明日',addDays(todayStr(),1)],['金曜',nextWeekday(5)],['来週月曜',nextWeekday(1,1)],['なし','']];
@@ -771,6 +889,12 @@ document.addEventListener('click', async e=>{
     case 'cat-up': moveCategory(el.dataset.name); break;
     case 'cat-del': { const n=el.dataset.name; const cnt=(S.sections.find(x=>x.name===n)?.items.length)||0;
       if(!confirm(`カテゴリ「${n}」を削除しますか？`+(cnt?`\n中のタスク${cnt}件は${INBOX}に移ります。`:''))) return; deleteCategory(n); break; }
+    case 'run-open': S.modal={type:'run', ref}; render(); setTimeout(()=>document.querySelector('form[data-act="run-start"] textarea')?.focus(),50); break;
+    case 'run-cancel': if(confirm('この実行を取り消しますか？')) setRun(el.dataset.id,{status:'cancelled'},'取り消しました','dashboard: 実行を取り消し'); break;
+    case 'run-close': setRun(el.dataset.id,{status:'closed'},'閉じました','dashboard: 実行を閉じる'); break;
+    case 'run-retry': { const r=S.runs.find(x=>x.id===el.dataset.id); const back = r.plan && r.run_started ? 'approved' : 'queued'; setRun(r.id,{status:back,error:null},'もう一度依頼しました','dashboard: 実行をやり直し'); break; }
+    case 'run-replan': { const f=el.closest('form'); const fb=f.note.value.trim(); if(!fb){ toast('直してほしい点を書いてください',true); f.note.focus(); break; } setRun(el.dataset.id,{status:'queued',feedback:fb,plan:null},'計画し直しを依頼しました','dashboard: 計画し直しを依頼'); break; }
+    case 'run-complete': { const r=S.runs.find(x=>x.id===el.dataset.id); setRun(r.id,{status:'closed'},'閉じました','dashboard: 実行を閉じる'); if(findTask(S.sections,{cat:r.cat,text:r.task})) completeTask({cat:r.cat,text:r.task}); break; }
     case 'some-del': if(confirm(`「${el.dataset.text}」を削除しますか？`)) removeSomeday(el.dataset.text); break;
   }
 });
@@ -786,6 +910,8 @@ document.addEventListener('keydown', e=>{
 document.addEventListener('submit', async e=>{
   const f=e.target; const a=f.dataset.act; e.preventDefault();
   if(a==='quick'){ const v=f.q.value.trim(); if(!v) return; f.q.value=''; addTask(f.dataset.cat, {text:v,due:null,prio:false}); }
+  if(a==='run-start'){ const ref=S.modal.ref, note=f.note.value.trim(); S.modal=null; startRun(ref, note); return; }
+  if(a==='run-approve'){ const note=f.note.value.trim(); setRun(f.dataset.id,{status:'approved',approve_note:note||null},'承認しました（Mac で実行が始まります）','dashboard: 計画を承認'); return; }
   if(a==='cat-add'){ const v=f.q.value.trim(); if(!v) return; const err=badCatName(v); if(err) return toast(err,true); f.q.value=''; addCategory(v); return; }
   if(a==='someday-add'){ const v=f.q.value.trim(); if(!v) return; f.q.value=''; addSomeday(v); }
   if(a==='import'){ const iss=S.issues.find(i=>i.number===+f.dataset.num); importIssue(iss, f.dest.value, f.due.value); }
@@ -821,6 +947,7 @@ document.addEventListener('touchmove', e=>{ if(e.touches.length>1) e.preventDefa
   else { const tk=safeGet(LS.token); if(tk) S.be=githubBackend(tk, safeGet(LS.repo)||DEFAULT_REPO); }
   render();
   if(S.be) loadAll(true);
+  setInterval(pollRuns, 12000);
   setInterval(()=>{ if(S.be && document.visibilityState==='visible' && !qRunning && !Q.length && !S.modal && !document.activeElement?.closest?.('form')) loadAll(true); }, 60000);
 })();
 window.__aos = {S, parseTodo, serializeTodo, parseSomeday, serializeSomeday, parseDone};
