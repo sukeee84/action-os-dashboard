@@ -319,7 +319,7 @@ function demoBackend(){
 
 // ===== 状態 =====
 const S = {
-  be:null, sections:[], someday:[], done:{}, issues:[], loading:false, busy:false,
+  be:null, sections:[], someday:[], done:{}, issues:[], loading:false,
   tab: safeGet(LS.tab) || 'board', filter:null, modal:null, toast:null, loadedAt:0,
 };
 function safeGet(k){ try{ return localStorage.getItem(k); }catch{ return null; } }
@@ -359,37 +359,54 @@ async function mutateFile(path, fn, message, init=''){
   }
   throw new Error('保存が競合しました。もう一度試してください');
 }
-const commitMsg = s => s;
-async function run(label, steps){
-  if(S.busy) return;
-  S.busy=true; render();
-  try{ await steps(); toast(label); await loadAll(true); }
-  catch(e){ handleErr(e); await loadAll(true); }
-  finally{ S.busy=false; render(); }
+// 画面はすぐ変え、GitHubへの保存は裏で1件ずつ順番に行う
+const Q=[]; let qRunning=false;
+function setSyncIndicator(){ const b=document.querySelector('[data-act="reload"]'); if(b) b.classList.toggle('spin', S.loading||qRunning); }
+function enqueue(label, local, remote){
+  try{ local(); }catch(e){ console.warn(e); }
+  render(); toast(label);
+  Q.push(remote); pump();
 }
+async function pump(){
+  if(qRunning) return;
+  qRunning=true; setSyncIndicator();
+  while(Q.length){
+    const job=Q.shift();
+    try{ await job(); }
+    catch(e){ handleErr(e); Q.length=0; qRunning=false; await loadAll(true); return; }
+  }
+  qRunning=false; S.loadedAt=Date.now(); setSyncIndicator();
+}
+window.addEventListener('beforeunload', e=>{ if(qRunning||Q.length){ e.preventDefault(); e.returnValue=''; } });
 function handleErr(e){
   console.error(e);
   if(e.gone) return toast('他の端末で変更されていたため、最新の状態に更新しました', true);
   if(e.status===401) return toast('トークンが無効です。設定から入れ直してください', true);
   if(e.status===403) return toast('トークンの権限が足りません（Contents / Issues の読み書き）', true);
-  toast(e.message||'エラーが発生しました', true);
+  toast('保存に失敗したため、最新の状態に戻しました', true);
 }
 
 // ===== 操作 =====
-function opsTodo(fn, msg){ return mutateFile('todo.md', t=>{ const s=parseTodo(t); if(fn(s)===false) return false; return serializeTodo(s); }, commitMsg(msg), '# TODO\n'); }
+// fn は todo.md の構造を書き換える関数。画面上のデータと、保存直前に読み直した最新ファイルの両方に同じ fn を当てる
+function opsTodo(fn, msg){ return mutateFile('todo.md', t=>{ const s=parseTodo(t); if(fn(s)===false) return false; return serializeTodo(s); }, msg, '# TODO\n'); }
+const somedayFile = (fn, msg) => mutateFile('someday.md', t=>{ const it=parseSomeday(t); if(fn(it)===false) return false; return serializeSomeday(it); }, msg, '# いつかやる\n');
+const pushSome = text => it => { it.push(text); };
+const dropSome = text => it => { const i=it.indexOf(text); if(i<0) return false; it.splice(i,1); };
+const removeRef = ref => s => { const f=findTask(s,ref); if(!f) return false; f.remove(); };
 
 function addTask(cat, t, parentText){
-  return run('追加しました', ()=>opsTodo(s=>{
+  const fn=s=>{
     const sec=s.find(x=>x.name===cat);
     if(parentText!==undefined){ const p=sec.items.find(i=>i.text===parentText); if(!p) return false; p.subs.push({...t,subs:[]}); }
     else sec.items.push({...t,subs:[]});
-  }, `dashboard: 「${t.text}」を${cat}に追加`));
+  };
+  enqueue('追加しました', ()=>fn(S.sections), ()=>opsTodo(fn, `dashboard: 「${t.text}」を${cat}に追加`));
 }
 function completeTask(ref){
   const today=todayStr(), ym=monthOf(today);
   const label = ref.parent!==undefined ? `${ref.text}（${ref.parent}）` : ref.text;
-  return run('完了にしました', async ()=>{
-    await opsTodo(s=>{ const f=findTask(s,ref); if(!f) return false; f.remove(); }, `dashboard: 「${label}」を完了`);
+  enqueue('完了にしました', ()=>{ removeRef(ref)(S.sections); (S.done[ym]=S.done[ym]||[]).push({text:label,date:today}); }, async ()=>{
+    await opsTodo(removeRef(ref), `dashboard: 「${label}」を完了`);
     await mutateFile(`done/${ym}.md`, t=>{
       let body=t||`# ${ym} 完了ログ\n`; if(!body.endsWith('\n')) body+='\n';
       return body+`- [x] ${label} ✅${today}\n`;
@@ -397,40 +414,42 @@ function completeTask(ref){
   });
 }
 function updateTask(ref, patch){
-  return run('更新しました', ()=>opsTodo(s=>{
+  const fn=s=>{
     const f=findTask(s,ref); if(!f) return false;
-    const subs=patch.subs ?? f.task.subs;
+    const subs=(patch.subs ?? f.task.subs).map(x=>({...x}));
     Object.assign(f.task, {text:patch.text, due:patch.due, prio:patch.prio});
     if(ref.parent===undefined) f.task.subs=subs;
     if(patch.cat && patch.cat!==ref.cat && ref.parent===undefined){
       f.remove(); s.find(x=>x.name===patch.cat).items.push(f.task);
     }
-  }, `dashboard: 「${patch.text}」を更新`));
+  };
+  enqueue('更新しました', ()=>fn(S.sections), ()=>opsTodo(fn, `dashboard: 「${patch.text}」を更新`));
 }
 function deleteTask(ref){
-  return run('削除しました', ()=>opsTodo(s=>{ const f=findTask(s,ref); if(!f) return false; f.remove(); }, `dashboard: 「${ref.text}」を削除`));
+  enqueue('削除しました', ()=>removeRef(ref)(S.sections), ()=>opsTodo(removeRef(ref), `dashboard: 「${ref.text}」を削除`));
 }
 function toSomeday(ref){
-  return run('いつかやるに移しました', async ()=>{
-    await opsTodo(s=>{ const f=findTask(s,ref); if(!f) return false; f.remove(); }, `dashboard: 「${ref.text}」をいつかやるへ移動`);
-    await mutateFile('someday.md', t=>{ const it=parseSomeday(t); it.push(ref.text); return serializeSomeday(it); }, `dashboard: 「${ref.text}」をいつかやるに追加`, '# いつかやる\n');
+  enqueue('いつかやるに移しました', ()=>{ removeRef(ref)(S.sections); S.someday.push(ref.text); }, async ()=>{
+    await opsTodo(removeRef(ref), `dashboard: 「${ref.text}」をいつかやるへ移動`);
+    await somedayFile(pushSome(ref.text), `dashboard: 「${ref.text}」をいつかやるに追加`);
   });
 }
 function addSomeday(text){
-  return run('追加しました', ()=>mutateFile('someday.md', t=>{ const it=parseSomeday(t); it.push(text); return serializeSomeday(it); }, `dashboard: 「${text}」をいつかやるに追加`, '# いつかやる\n'));
+  enqueue('追加しました', ()=>S.someday.push(text), ()=>somedayFile(pushSome(text), `dashboard: 「${text}」をいつかやるに追加`));
 }
 function removeSomeday(text, promoteCat){
-  return run(promoteCat?`${promoteCat}に移しました`:'削除しました', async ()=>{
-    await mutateFile('someday.md', t=>{ const it=parseSomeday(t); const i=it.indexOf(text); if(i<0) return false; it.splice(i,1); return serializeSomeday(it); },
-      promoteCat?`dashboard: 「${text}」をいつかやるからtodoへ移動`:`dashboard: 「${text}」をいつかやるから削除`, '# いつかやる\n');
-    if(promoteCat) await opsTodo(s=>{ s.find(x=>x.name===promoteCat).items.push({text,due:null,prio:false,subs:[]}); }, `dashboard: 「${text}」を${promoteCat}に追加`);
+  const addFn=s=>{ s.find(x=>x.name===promoteCat).items.push({text,due:null,prio:false,subs:[]}); };
+  enqueue(promoteCat?`${promoteCat}に移しました`:'削除しました', ()=>{ dropSome(text)(S.someday); if(promoteCat) addFn(S.sections); }, async ()=>{
+    await somedayFile(dropSome(text), promoteCat?`dashboard: 「${text}」をいつかやるからtodoへ移動`:`dashboard: 「${text}」をいつかやるから削除`);
+    if(promoteCat) await opsTodo(addFn, `dashboard: 「${text}」を${promoteCat}に追加`);
   });
 }
 function importIssue(iss, dest, due, prio){
   const text=iss.title.trim();
-  return run('取り込みました', async ()=>{
-    if(dest==='someday') await mutateFile('someday.md', t=>{ const it=parseSomeday(t); it.push(text); return serializeSomeday(it); }, `inbox: Issue#${iss.number} ${text}をいつかやるに追加`, '# いつかやる\n');
-    else await opsTodo(s=>{ s.find(x=>x.name===dest).items.push({text,due:due||null,prio:!!prio,subs:[]}); }, `inbox: Issue#${iss.number} ${text}を${dest}に追加`);
+  const addFn=s=>{ s.find(x=>x.name===dest).items.push({text,due:due||null,prio:!!prio,subs:[]}); };
+  enqueue('取り込みました', ()=>{ S.issues=S.issues.filter(i=>i.number!==iss.number); if(dest==='someday') S.someday.push(text); else addFn(S.sections); }, async ()=>{
+    if(dest==='someday') await somedayFile(pushSome(text), `inbox: Issue#${iss.number} ${text}をいつかやるに追加`);
+    else await opsTodo(addFn, `inbox: Issue#${iss.number} ${text}を${dest}に追加`);
     await S.be.closeIssue(iss.number);
   });
 }
@@ -487,7 +506,7 @@ function taskRow(cat, t, opts={}){
   if(t.prio) meta.push(`<span class="chip prio">${icon('flag')}高</span>`);
   if(!opts.parent && t.subs && t.subs.length) meta.push(`<span class="chip">サブ ${t.subs.length}件</span>`);
   let h=`<div class="task${opts.parent!==undefined?' sub':''}">
-    <button class="chk" title="完了にする" data-act="done" data-ref='${esc(JSON.stringify(ref))}' ${S.busy?'disabled':''}>${icon('check')}</button>
+    <button class="chk" title="完了にする" data-act="done" data-ref='${esc(JSON.stringify(ref))}' >${icon('check')}</button>
     <div class="tbody" data-act="edit" data-ref='${esc(JSON.stringify(ref))}'>
       <div class="ttext">${esc(t.text)}</div>${meta.length?`<div class="meta">${meta.join('')}</div>`:''}
     </div></div>`;
@@ -505,7 +524,7 @@ function viewBoard(){
     return `<section class="col" style="--cc:var(${CAT_COLOR[s.name]||'--c-misc'})">
       <div class="colhd"><span class="name">${esc(s.name)}</span><span class="count">${rows.length}</span></div>
       <div class="list">${rows.length? rows.map(r=>taskRow(r.cat,r.t)).join('') : '<div class="empty">タスクはありません</div>'}</div>
-      <form class="quick" data-act="quick" data-cat="${esc(s.name)}"><input name="q" placeholder="＋ ${esc(s.name)}にタスクを追加" autocomplete="off" enterkeyhint="done" ${S.busy?'disabled':''}></form>
+      <form class="quick" data-act="quick" data-cat="${esc(s.name)}"><input name="q" placeholder="＋ ${esc(s.name)}にタスクを追加" autocomplete="off" enterkeyhint="done" ></form>
     </section>`;
   }).join('') || '<div class="empty">該当するタスクはありません</div>'}</div>`;
 }
@@ -519,10 +538,10 @@ function viewTimeline(){
   return `<div class="flat">${body||'<div class="empty">該当するタスクはありません</div>'}</div>`;
 }
 function viewSomeday(){
-  return `<form class="quick" data-act="someday-add" style="padding:0 0 12px"><input name="q" placeholder="＋ いつかやること・アイデアを追加" autocomplete="off" enterkeyhint="done" ${S.busy?'disabled':''}></form>
+  return `<form class="quick" data-act="someday-add" style="padding:0 0 12px"><input name="q" placeholder="＋ いつかやること・アイデアを追加" autocomplete="off" enterkeyhint="done" ></form>
   <div class="plain">${S.someday.length? S.someday.map(x=>`<div class="prow"><div class="t">${esc(x)}</div>
-    <select class="btn sm" data-act="some-promote" data-text="${esc(x)}" ${S.busy?'disabled':''}><option value="">やることへ移す…</option>${CATS.map(c=>`<option>${c}</option>`).join('')}</select>
-    <button class="btn sm danger" data-act="some-del" data-text="${esc(x)}" ${S.busy?'disabled':''}>削除</button></div>`).join('') : '<div class="empty">まだありません</div>'}</div>`;
+    <select class="btn sm" data-act="some-promote" data-text="${esc(x)}" ><option value="">やることへ移す…</option>${CATS.map(c=>`<option>${c}</option>`).join('')}</select>
+    <button class="btn sm danger" data-act="some-del" data-text="${esc(x)}" >削除</button></div>`).join('') : '<div class="empty">まだありません</div>'}</div>`;
 }
 function viewDone(){
   const ms=Object.keys(S.done).sort().reverse();
@@ -537,7 +556,7 @@ function viewInbox(){
     <div class="t"><div>${esc(i.title)}</div>${i.body?`<div class="b">${esc(i.body.slice(0,200))}</div>`:''}</div>
     <select name="dest" class="btn sm">${CATS.map(c=>`<option ${guess(i.title+i.body)===c?'selected':''}>${c}</option>`).join('')}<option value="someday" ${guess(i.title+i.body)==='someday'?'selected':''}>いつかやる</option></select>
     <input type="date" name="due" class="btn sm">
-    <button class="btn sm pri" ${S.busy?'disabled':''}>取り込む</button></form>`).join('')}</div>`;
+    <button class="btn sm pri" >取り込む</button></form>`).join('')}</div>`;
 }
 
 function render(){
@@ -553,7 +572,7 @@ function render(){
   app.innerHTML=`
   <header><div class="wrap hd">
     <span class="brand">Action OS</span><span class="today">${esc(mdw(t))}${S.be.kind==='demo'?' · デモ':''}</span><span class="sp"></span>
-    <button class="iconbtn ${S.loading||S.busy?'spin':''}" data-act="reload" title="最新に更新">${icon('refresh')}</button>
+    <button class="iconbtn ${S.loading||qRunning?'spin':''}" data-act="reload" title="最新に更新">${icon('refresh')}</button>
     <button class="iconbtn" data-act="settings" title="設定">${icon('gear')}</button>
   </div></header>
   <main class="wrap">
@@ -598,9 +617,9 @@ function viewModal(){
       <div class="row"><input class="inp" data-newsub placeholder="サブタスクを追加（Enter）" autocomplete="off"><button type="button" class="iconbtn" data-act="sub-add">${icon('plus')}</button></div>
     </div></div>`:''}
     <div class="actions">
-      ${isEdit?`<button type="button" class="btn danger left" data-act="del" ${S.busy?'disabled':''}>削除</button>${m.ref.parent===undefined?`<button type="button" class="btn" data-act="to-someday" ${S.busy?'disabled':''}>いつかへ</button>`:''}`:''}
+      ${isEdit?`<button type="button" class="btn danger left" data-act="del" >削除</button>${m.ref.parent===undefined?`<button type="button" class="btn" data-act="to-someday" >いつかへ</button>`:''}`:''}
       <button type="button" class="btn" data-act="close">キャンセル</button>
-      <button class="btn pri" ${S.busy?'disabled':''}>${isEdit?'保存':'追加'}</button>
+      <button class="btn pri" >${isEdit?'保存':'追加'}</button>
     </div>
   </form></div>`;
 }
@@ -644,12 +663,12 @@ document.addEventListener('click', async e=>{
   switch(a){
     case 'tab': S.tab=el.dataset.k; safeSet(LS.tab,S.tab); render(); break;
     case 'filter': S.filter = S.filter===el.dataset.k?null:el.dataset.k; if(S.tab!=='board'&&S.tab!=='timeline') S.tab='timeline'; render(); break;
-    case 'reload': loadAll(); break;
+    case 'reload': if(qRunning||Q.length){ toast('保存中です。少し待ってから更新してください'); break; } loadAll(); break;
     case 'settings': S.modal={type:'settings'}; render(); break;
     case 'logout': safeSet(LS.token,null); S.be=null; S.modal=null; render(); break;
     case 'add': S.modal={type:'add', draft:{text:'', cat:'未分類', due:'', prio:false, subs:[]}}; render(); break;
     case 'close': S.modal=null; render(); break;
-    case 'done': if(!S.busy) completeTask(ref); break;
+    case 'done': { const row=el.closest('.task'); row&&(row.style.opacity='.35'); completeTask(ref); break; }
     case 'edit': openEdit(ref); break;
     case 'set': { syncDraft(); const d=S.modal.draft, f=el.dataset.f, v=el.dataset.v; d[f]= f==='prio'? !!v : v; render(); break; }
     case 'sub-add': { syncDraft(); const d=S.modal.draft; if(d.newsub&&d.newsub.trim()) d.subs.push({text:d.newsub.trim(),due:null,prio:false}); d.newsub=''; render(); document.querySelector('[data-newsub]')?.focus(); break; }
@@ -690,7 +709,7 @@ document.addEventListener('submit', async e=>{
   }
 });
 // 画面に戻ってきたら最新を取り直す（スマホとMacの行き来用）
-document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && S.be && !S.busy && !S.modal && Date.now()-S.loadedAt>15000) loadAll(true); });
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && S.be && !qRunning && !Q.length && !S.modal && Date.now()-S.loadedAt>15000) loadAll(true); });
 
 // ===== 起動 =====
 (function boot(){
@@ -699,7 +718,7 @@ document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState=
   else { const tk=safeGet(LS.token); if(tk) S.be=githubBackend(tk, safeGet(LS.repo)||DEFAULT_REPO); }
   render();
   if(S.be) loadAll(true);
-  setInterval(()=>{ if(S.be && document.visibilityState==='visible' && !S.busy && !S.modal && !document.activeElement?.closest?.('form')) loadAll(true); }, 60000);
+  setInterval(()=>{ if(S.be && document.visibilityState==='visible' && !qRunning && !Q.length && !S.modal && !document.activeElement?.closest?.('form')) loadAll(true); }, 60000);
 })();
 window.__aos = {S, parseTodo, serializeTodo, parseSomeday, serializeSomeday, parseDone};
 </script>
