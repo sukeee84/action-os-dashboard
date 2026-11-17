@@ -162,8 +162,9 @@ header{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 8
 .hint code{background:var(--panel2);padding:1px 5px;border-radius:5px;font-size:11px}
 
 /* トースト */
-.toast{position:fixed;left:50%;bottom:calc(88px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--text);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:14px;z-index:60;box-shadow:0 6px 18px rgba(0,0,0,.2);max-width:calc(100vw - 32px)}
-.toast.err{background:var(--red);color:#fff}
+.toast{position:fixed;left:50%;bottom:calc(30px + env(safe-area-inset-bottom));transform:translateX(-50%);background:rgba(28,29,33,.92);color:#f2f2f4;padding:8px 14px;border-radius:12px;font-size:13px;line-height:1.4;z-index:60;box-shadow:0 4px 14px rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:min(420px,calc(100vw - 120px));animation:toastin .18s ease-out}
+.toast.err{background:rgba(190,50,50,.95);color:#fff;white-space:normal}
+@keyframes toastin{from{opacity:0;transform:translate(-50%,6px)}to{opacity:1;transform:translate(-50%,0)}}
 
 /* 初期設定 */
 .setup{max-width:520px;margin:40px auto;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px;box-shadow:var(--shadow)}
@@ -213,7 +214,8 @@ main.wrap{max-width:880px}
 .runs{display:flex;flex-direction:column;gap:12px}
 .runcard{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:var(--shadow)}
 .runhd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
-.runhd .rtitle{font-weight:700;flex:1;min-width:0}
+.runhd .rtitle{font-weight:700;flex:1 1 100%;order:3;min-width:0;line-height:1.5}
+.runhd .rcat{margin-left:auto}
 .runhd .rcat{font-size:12px;color:var(--faint)}
 .mdbody{white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.7;background:var(--panel2);border-radius:10px;padding:12px 14px;margin:8px 0;max-height:60vh;overflow:auto}
 .mdbody .mdh{font-weight:700;font-size:14px;color:var(--text);margin-top:10px}
@@ -224,6 +226,25 @@ main.wrap{max-width:880px}
 .runcard .err{color:var(--red);font-size:13px;white-space:pre-wrap;margin:6px 0}
 .runcard form textarea{margin-top:6px}
 .runcard details{margin:6px 0}
+.pg{margin:6px 0 4px}
+.pgnow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:14px;padding:9px 12px;border-radius:10px;background:var(--panel2)}
+.pgnow .pgdot{width:9px;height:9px;border-radius:50%;background:var(--accent);flex:none}
+.pgnow.busy .pgdot{animation:pulse 1.2s ease-in-out infinite}
+.pgnow.review{background:var(--amber-soft)} .pgnow.review .pgdot{background:var(--amber)} .pgnow.review b{color:var(--amber)}
+.pgnow.ng{background:var(--red-soft)} .pgnow.ng .pgdot{background:var(--red)} .pgnow.ng b{color:var(--red)}
+.pgnow.busy b{color:var(--accent)}
+.pgnow .pgago{margin-left:auto;font-size:12px;color:var(--faint)}
+.pgplan{list-style:none;margin:10px 0 6px;padding:0;display:flex;flex-direction:column;gap:5px;font-size:14px}
+.pgplan li{display:flex;align-items:center;gap:8px;color:var(--sub)}
+.pgplan li svg{width:14px;height:14px;color:var(--green);flex:none}
+.pgplan li.completed span{color:var(--faint);text-decoration:line-through}
+.pgplan li.in_progress{color:var(--text);font-weight:600}
+.pgplan .dotnow,.pgplan .dotwait{width:14px;height:14px;flex:none;border-radius:50%;border:2px solid var(--faint)}
+.pgplan .dotnow{border-color:var(--accent);background:radial-gradient(var(--accent) 35%,transparent 40%)}
+.pgrecap{font-size:14px;line-height:1.7;margin:8px 0 4px;padding:10px 12px;border-left:3px solid var(--accent);background:var(--panel2);border-radius:0 10px 10px 0}
+.pgask{display:flex;gap:8px;align-items:flex-start;font-size:14px;font-weight:600;color:var(--amber);margin:8px 0 2px}
+.pgask svg{width:14px;height:14px;flex:none;margin-top:3px}
+.pglast summary{cursor:pointer;font-size:13px;color:var(--accent)}
 .runcard details.plan summary{cursor:pointer;font-size:13px;color:var(--accent);margin:4px 0}
 a.chip.run{text-decoration:none}
 a.btn{text-decoration:none;display:inline-flex;align-items:center}
@@ -400,7 +421,7 @@ function demoBackend(){
 
 // ===== 状態 =====
 const S = {
-  be:null, sections:[], someday:[], done:{}, issues:[], runs:[], loading:false,
+  be:null, sections:[], someday:[], done:{}, issues:[], runs:[], progress:{}, loading:false,
   tab: safeGet(LS.tab) || 'board', filter:null, modal:null, toast:null, loadedAt:0,
 };
 function safeGet(k){ try{ return localStorage.getItem(k); }catch{ return null; } }
@@ -414,18 +435,19 @@ async function loadAll(quiet){
   S.loading=true; render();
   try{
     const ym=monthOf(todayStr());
-    const [todo, some, d1, d2, iss, runs] = await Promise.all([
+    const [todo, some, d1, d2, iss, runs, prog] = await Promise.all([
       S.be.read('todo.md'), S.be.read('someday.md'), S.be.read(`done/${ym}.md`), S.be.read(`done/${prevMonth(ym)}.md`),
       S.be.issues().catch(e=>{ console.warn(e); return null; }),
       S.be.read('runs.json').catch(()=>null),
+      S.be.read('progress.json').catch(()=>null),
     ]);
     S.runs=parseRuns(runs&&runs.text);
+    S.progress=parseProgress(prog&&prog.text);
     S.sections=parseTodo(todo?todo.text:'# TODO\n');
     S.someday=parseSomeday(some?some.text:'');
     S.done={[ym]:d1?parseDone(d1.text):[], [prevMonth(ym)]:d2?parseDone(d2.text):[]};
     S.issues=iss;
     S.loadedAt=Date.now();
-    if(!quiet) toast('最新の状態を読み込みました');
   }catch(e){ handleErr(e); }
   S.loading=false; render();
 }
@@ -574,7 +596,7 @@ function pickCategory(title){
 // ===== Claude で実行（Mac の実行係とは runs.json でやり取りする） =====
 const RUN_ST = {
   queued:{label:'Mac で開く待ち', cls:'wait', attn:false, active:true},
-  opened:{label:'デスクトップで進行中', cls:'busy', attn:true},
+  opened:{label:'デスクトップで進行中', cls:'busy', attn:true, active:true},
   // 以下は旧い方式の名残（表示と、デスクトップアプリへの引き継ぎだけ対応）
   thread:{label:'スレッド進行中', cls:'busy', attn:true, active:true},
   paused:{label:'スレッド停止中', cls:'review', attn:true},
@@ -616,7 +638,7 @@ function buildPrompt(r){
   for(const x of r.subs||[]) lines.push(`  - サブタスク: ${x}`);
   if(r.prev_session){
     const log = S.workdir ? `${(process_home(S.workdir))}/.claude/projects/${S.workdir.replace(/[^A-Za-z0-9]/g,'-')}/${r.prev_session}.jsonl` : `（セッション ${r.prev_session}）`;
-    return `【Action OS から】前のスレッドの続きです。前のスレッドは途中で止まったので、このスレッドで引き継ぎます。
+    return `【Action OS から】（実行ID: ${r.id||''}）前のスレッドの続きです。前のスレッドは途中で止まったので、このスレッドで引き継ぎます。
 
 ${lines.join('\n')}
 
@@ -625,7 +647,7 @@ ${lines.join('\n')}
 
 ${RULES}`;
   }
-  return `【Action OS から】このタスクを、ユーザーと相談しながら進めてください。
+  return `【Action OS から】（実行ID: ${r.id||''}）このタスクを、ユーザーと相談しながら進めてください。
 
 ${lines.join('\n')}${r.note?`\n補足（ユーザーより）: ${r.note}`:''}
 
@@ -661,7 +683,15 @@ async function pollRuns(){
   if(!S.be || qRunning || Q.length || document.visibilityState!=='visible') return;
   if(!S.runs.some(r=>RUN_ST[r.status]?.active)) return;
   try{
-    const f=await S.be.read('runs.json'); const next=parseRuns(f&&f.text);
+    const [f,pg]=await Promise.all([S.be.read('runs.json'), S.be.read('progress.json').catch(()=>null)]);
+    const next=parseRuns(f&&f.text), nextPg=parseProgress(pg&&pg.text);
+    if(JSON.stringify(nextPg)!==JSON.stringify(S.progress)){
+      const wasSt=Object.fromEntries(Object.entries(S.progress).map(([k,v])=>[k,v.state]));
+      S.progress=nextPg;
+      const w=Object.entries(nextPg).find(([k,v])=>v.state==='waiting' && wasSt[k] && wasSt[k]!=='waiting');
+      if(w){ const r=next.find(x=>x.id===w[0]); toast(`「${(r&&r.task||'').slice(0,18)}」が返事を待っています`); }
+      if(!S.modal && !document.activeElement?.closest?.('form,textarea')) render();
+    }
     if(JSON.stringify(next)!==JSON.stringify(S.runs)){
       const was=Object.fromEntries(S.runs.map(r=>[r.id,r.status]));
       S.runs=next;
@@ -670,6 +700,26 @@ async function pollRuns(){
       if(!S.modal && !document.activeElement?.closest?.('form,textarea')) render();
     }
   }catch(e){ console.warn(e); }
+}
+function parseProgress(text){ try{ const d=JSON.parse(text||'{}'); return d&&d.runs&&typeof d.runs==='object'?d.runs:{}; }catch{ return {}; } }
+const PG_ST = {working:{label:'作業中', cls:'busy'}, waiting:{label:'返事待ち', cls:'review'}, blocked:{label:'止まっている', cls:'ng'}};
+function ago(iso){
+  if(!iso) return ''; const t=Date.parse(iso); if(!t) return '';
+  const m=Math.round((Date.now()-t)/60000);
+  if(m<1) return 'たった今'; if(m<60) return `${m}分前`; const h=Math.round(m/60); if(h<24) return `${h}時間前`; return `${Math.round(h/24)}日前`;
+}
+function progressView(pg){
+  if(!pg) return `<div class="hint">デスクトップアプリで Enter を押して始めると、ここに進み具合が出ます。</div>`;
+  const st=PG_ST[pg.state]||PG_ST.working;
+  const planHtml = (pg.plan||[]).length ? `<ul class="pgplan">${pg.plan.map(p=>`<li class="${p.s}">${p.s==='completed'?icon('check'):p.s==='in_progress'?'<span class="dotnow"></span>':'<span class="dotwait"></span>'}<span>${esc(p.t)}</span></li>`).join('')}</ul>` : '';
+  return `<div class="pg">
+    <div class="pgnow ${st.cls}"><span class="pgdot"></span><b>${st.label}</b><span>${esc(pg.doing||'')}</span><span class="pgago">${esc(ago(pg.last_at))}</span></div>
+    ${pg.title?`<div class="hint">デスクトップのスレッド名：${esc(pg.title)}</div>`:''}
+    ${planHtml}
+    ${pg.recap?`<div class="pgrecap">${esc(pg.recap)}</div>`:''}
+    ${pg.ask?`<div class="pgask">${icon('flag')}<span>${esc(pg.ask)}</span></div>`:''}
+    ${pg.last_text?`<details class="pglast"><summary>Claude の最後の発言を見る</summary><div class="mdbody">${md(pg.last_text)}</div></details>`:''}
+  </div>`;
 }
 function md(text){
   return esc(text||'').trim().split('\n').map(l=>{
@@ -693,7 +743,7 @@ function viewRuns(){
     const finish = `<button class="btn sm" data-act="run-close" data-id="${r.id}">スレッドを終える</button><button class="btn sm" data-act="run-complete" data-id="${r.id}">タスクを完了にする</button>`;
     const ctl = {
       queued:`<div class="hint">Mac のデスクトップアプリにスレッドを開くのを待っています（Mac が起動していれば30秒ほど）。開いたら Mac で Enter を押すと始まります。</div><div class="actions"><button class="btn sm danger" data-act="run-cancel" data-id="${r.id}">取り消す</button>${IS_MAC_DESKTOP?`<button class="btn sm pri" data-act="run-reopen" data-id="${r.id}">今ここで開く</button>`:''}</div>`,
-      opened:`<div class="hint">デスクトップアプリの Code の一覧に開いています。まだなら Enter で始めてください。<br>スレッドが見当たらないときは「もう一度開く」で開き直せます。</div><div class="actions">${finish}${IS_MAC_DESKTOP?`<button class="btn sm pri" data-act="run-reopen" data-id="${r.id}">もう一度開く</button>`:''}</div>`,
+      opened:`${progressView(S.progress[r.id])}<div class="actions">${finish}${IS_MAC_DESKTOP&&!S.progress[r.id]?`<button class="btn sm pri" data-act="run-reopen" data-id="${r.id}">もう一度開く</button>`:''}</div>`,
       thread:`<div class="hint">（旧い方式のスレッドです）デスクトップアプリの新しいスレッドに、これまでの会話記録ごと引き継げます。</div>
         <form data-act="run-resume" data-id="${r.id}"><textarea class="inp" name="note" rows="2" placeholder="引き継ぎ時に伝えること（任意）"></textarea>
         <div class="actions">${finish}<button class="btn sm pri">デスクトップアプリで続ける</button></div></form>`,
@@ -767,7 +817,9 @@ function taskRow(cat, t, opts={}){
   if(t.prio) meta.push(`<span class="chip prio">${icon('flag')}高</span>`);
   if(!opts.parent && t.subs && t.subs.length) meta.push(`<span class="chip">サブ ${t.subs.length}件</span>`);
   const run = opts.parent===undefined ? runFor(cat, t.text) : null;
-  if(run) meta.push(run.url && run.status==='thread'
+  const pgr = run && run.status==='opened' ? S.progress[run.id] : null;
+  if(pgr){ const st=PG_ST[pgr.state]||PG_ST.working; meta.push(`<span class="chip run ${st.cls}" data-act="tab" data-k="runs">${icon('play')}${st.label}${pgr.state==='working'&&pgr.doing?`・${esc(pgr.doing.replace(/しています$|ています$/,'中'))}`:''}</span>`); }
+  else if(run) meta.push(run.url && run.status==='thread'
     ? `<a class="chip run ${RUN_ST[run.status].cls}" href="${esc(run.url)}" target="_blank" rel="noopener">${icon('play')}${RUN_ST[run.status].label}・開く</a>`
     : `<span class="chip run ${RUN_ST[run.status].cls}" data-act="tab" data-k="runs">${icon('play')}${RUN_ST[run.status].label}</span>`);
   let h=`<div class="task${opts.parent!==undefined?' sub':''}">
