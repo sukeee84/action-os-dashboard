@@ -224,6 +224,9 @@ main.wrap{max-width:880px}
 .runcard .err{color:var(--red);font-size:13px;white-space:pre-wrap;margin:6px 0}
 .runcard form textarea{margin-top:6px}
 .runcard details{margin:6px 0}
+.wp{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--sub);background:var(--panel2);border-radius:999px;padding:3px 4px 3px 12px;margin-bottom:4px}
+.wp b{font-size:12px;border-radius:999px;padding:1px 8px;background:var(--panel);color:var(--sub)}
+.wp.new b{background:var(--accent);color:#fff}
 @media (max-width:640px){
   .tbody{flex-direction:column;align-items:flex-start;gap:4px}
   .meta{justify-content:flex-start}
@@ -616,6 +619,11 @@ function md(text){
     return '<div>'+l.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>').replace(/【送信】/g,'<span class="send">【送信】</span>')+'</div>';
   }).join('');
 }
+// 計画の「作業場所: `xxx/`（既存|新規）」を読み取る
+function workplace(r){
+  const m=(r.plan||'').match(/作業場所\s*[:：]\s*`?([^`\s（(]+)`?\s*[（(]\s*(既存|新規)/);
+  return m ? {path:m[1], kind:m[2]} : null;
+}
 function viewRuns(){
   const list=S.runs.filter(runOpen).slice().reverse();
   const hist=S.runs.filter(r=>!runOpen(r)).slice(-10).reverse();
@@ -635,6 +643,7 @@ function viewRuns(){
       failed:`<div class="err">${esc(r.error||'失敗しました')}</div><div class="actions"><button class="btn sm" data-act="run-close" data-id="${r.id}">閉じる</button><button class="btn sm pri" data-act="run-retry" data-id="${r.id}">もう一度</button></div>`,
     }[r.status]||'';
     return `<div class="runcard"><div class="runhd"><span class="chip run ${st.cls}">${icon('play')}${st.label}</span><span class="rtitle">${esc(r.task)}</span><span class="rcat">${esc(r.cat||'')}</span></div>
+      ${(wp=>wp?`<div class="wp ${wp.kind==='新規'?'new':''}">作業場所 <code>salon-os/${esc(wp.path.replace(/^\.?\/?/,''))}</code><b>${wp.kind}</b></div>`:'')(workplace(r))}
       ${r.note?`<div class="hint">補足：${esc(r.note)}</div>`:''}
       ${body?`<div class="mdbody">${body}</div>`:''}
       ${r.session?`<details class="hint"><summary>Mac で続きを直接触るには</summary><code>cd ~/dev/salon-os && claude --resume ${esc(r.session)}</code></details>`:''}
