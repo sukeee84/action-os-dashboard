@@ -510,7 +510,10 @@ function addTask(cat, t, parentText){
 function completeTask(ref){
   const today=todayStr(), ym=monthOf(today);
   const label = ref.parent!==undefined ? `${ref.text}（${ref.parent}）` : ref.text;
-  enqueue('完了にしました', ()=>{ removeRef(ref)(S.sections); (S.done[ym]=S.done[ym]||[]).push({text:label,date:today}); }, async ()=>{
+  // このタスクで開いている実行（スレッド）があれば一緒に閉じる
+  const openRuns = ref.parent===undefined ? S.runs.filter(r=>r.cat===ref.cat && r.task===ref.text && runOpen(r)).map(r=>r.id) : [];
+  enqueue('完了にしました', ()=>{ removeRef(ref)(S.sections); (S.done[ym]=S.done[ym]||[]).push({text:label,date:today}); for(const id of openRuns) patchRun(id,{status:'closed'})(S.runs); }, async ()=>{
+    if(openRuns.length) await runsFile(runs=>{ let hit=false; for(const id of openRuns){ if(patchRun(id,{status:'closed'})(runs)!==false) hit=true; } if(!hit) return false; }, `dashboard: 「${label}」の実行を閉じる`).catch(e=>{ if(!e.gone) throw e; });
     await opsTodo(removeRef(ref), `dashboard: 「${label}」を完了`);
     await mutateFile(`done/${ym}.md`, t=>{
       let body=t||`# ${ym} 完了ログ\n`; if(!body.endsWith('\n')) body+='\n';
