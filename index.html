@@ -224,6 +224,9 @@ main.wrap{max-width:880px}
 .runcard .err{color:var(--red);font-size:13px;white-space:pre-wrap;margin:6px 0}
 .runcard form textarea{margin-top:6px}
 .runcard details{margin:6px 0}
+.runcard details.plan summary{cursor:pointer;font-size:13px;color:var(--accent);margin:4px 0}
+a.chip.run{text-decoration:none}
+a.btn{text-decoration:none;display:inline-flex;align-items:center}
 .wp{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--sub);background:var(--panel2);border-radius:999px;padding:3px 4px 3px 12px;margin-bottom:4px}
 .wp b{font-size:12px;border-radius:999px;padding:1px 8px;background:var(--panel);color:var(--sub)}
 .wp.new b{background:var(--accent);color:#fff}
@@ -570,9 +573,12 @@ function pickCategory(title){
 
 // ===== Claude で実行（Mac の実行係とは runs.json でやり取りする） =====
 const RUN_ST = {
-  queued:{label:'計画待ち', cls:'wait', attn:false, active:true},
-  planning:{label:'計画中', cls:'busy', attn:false, active:true},
+  queued:{label:'スレッド準備中', cls:'wait', attn:false, active:true},
+  thread:{label:'スレッド進行中', cls:'busy', attn:true, active:true},
+  paused:{label:'スレッド停止中', cls:'review', attn:true},
+  // 以下は旧い方式（計画→承認）の名残。表示とスレッドへの移行だけ対応する
   review:{label:'承認待ち', cls:'review', attn:true},
+  planning:{label:'計画中', cls:'busy', attn:false, active:true},
   approved:{label:'実行待ち', cls:'wait', attn:false, active:true},
   running:{label:'実行中', cls:'busy', attn:false, active:true},
   done:{label:'実行済み', cls:'ok', attn:true},
@@ -592,7 +598,7 @@ function startRun(ref, note){
   const f=findTask(S.sections, ref); if(!f) return;
   const run={id:'r'+Date.now().toString(36)+Math.random().toString(36).slice(2,6), task:ref.text, cat:ref.cat, due:f.task.due||null,
     subs:(f.task.subs||[]).map(x=>x.text), note:note||null, status:'queued', created:nowJst(), updated:nowJst()};
-  enqueue('計画を依頼しました（Mac で始まります）', ()=>S.runs.push({...run}), ()=>runsFile(runs=>{ runs.push(run); }, `dashboard: 「${ref.text}」の実行を依頼`));
+  enqueue('スレッドを依頼しました（Mac で立ち上がります）', ()=>S.runs.push({...run}), ()=>runsFile(runs=>{ runs.push(run); }, `dashboard: 「${ref.text}」の実行を依頼`));
 }
 function setRun(id, patch, label, msg){
   enqueue(label, ()=>patchRun(id,patch)(S.runs), ()=>runsFile(patchRun(id,patch), msg));
@@ -629,27 +635,28 @@ function viewRuns(){
   const hist=S.runs.filter(r=>!runOpen(r)).slice(-10).reverse();
   const card=r=>{
     const st=RUN_ST[r.status];
-    const body = r.status==='done' ? md(r.result) : (r.plan? md(r.plan) : '');
+    const wp=workplace(r);
+    const openBtn = r.url ? `<a class="btn sm pri" href="${esc(r.url)}" target="_blank" rel="noopener">スレッドを開く</a>` : '';
+    const finish = `<button class="btn sm" data-act="run-close" data-id="${r.id}">スレッドを終える</button><button class="btn sm" data-act="run-complete" data-id="${r.id}">タスクを完了にする</button>`;
     const ctl = {
-      queued:`<div class="hint">Mac の Claude Code が計画を作ります。Mac が起動していれば1分ほどで始まります。</div><div class="actions"><button class="btn sm danger" data-act="run-cancel" data-id="${r.id}">取り消す</button></div>`,
-      planning:`<div class="hint">計画と下書きを作っています（数分かかることがあります）。</div>`,
-      approved:`<div class="hint">承認済み。Mac で実行が始まるのを待っています。</div>`,
-      running:`<div class="hint">計画どおりに作業しています。</div>`,
-      review:`<form data-act="run-approve" data-id="${r.id}"><textarea class="inp" name="note" rows="2" placeholder="直してほしい点や、実行時の追加指示（任意）"></textarea>
-        <div class="actions"><button type="button" class="btn sm danger left" data-act="run-cancel" data-id="${r.id}">取り消す</button>
-        <button type="button" class="btn sm" data-act="run-replan" data-id="${r.id}">指示を反映して計画し直す</button>
-        <button class="btn sm pri">承認して実行</button></div></form>`,
-      done:`<div class="actions"><button class="btn sm" data-act="run-close" data-id="${r.id}">閉じる</button><button class="btn sm pri" data-act="run-complete" data-id="${r.id}">タスクを完了にする</button></div>`,
-      failed:`<div class="err">${esc(r.error||'失敗しました')}</div><div class="actions"><button class="btn sm" data-act="run-close" data-id="${r.id}">閉じる</button><button class="btn sm pri" data-act="run-retry" data-id="${r.id}">もう一度</button></div>`,
+      queued:`<div class="hint">Mac でスレッドを立ち上げています。Mac が起動していれば1分ほどでリンクが出ます。</div><div class="actions"><button class="btn sm danger" data-act="run-cancel" data-id="${r.id}">取り消す</button></div>`,
+      thread:`<div class="hint">${r.url?'スレッドで Claude と相談しながら進めてください。スマホの Claude アプリや claude.ai の一覧にも出ています。':'スレッドのリンクを待っています…'}</div><div class="actions">${finish}${openBtn}</div>`,
+      paused:`<div class="hint">Mac の再起動などでスレッドが止まりました。再開すると、続きから同じスレッドの内容で立ち上がります。</div>${r.error?`<div class="err">${esc(r.error)}</div>`:''}
+        <form data-act="run-resume" data-id="${r.id}"><textarea class="inp" name="note" rows="2" placeholder="再開時に伝えること（任意）"></textarea>
+        <div class="actions">${finish}<button class="btn sm pri">再開する</button></div></form>`,
+      review:`<form data-act="run-resume" data-id="${r.id}"><div class="hint">（旧い方式で作られた計画です）返事を書いて「スレッドで続ける」を押すと、この計画の続きとしてスレッドが立ち、そこで相談しながら進められます。</div><textarea class="inp" name="note" rows="3" placeholder="計画への返事（例：数字を確認するところまで進めて。絞り込みは一緒にやる）"></textarea>
+        <div class="actions"><button type="button" class="btn sm danger left" data-act="run-cancel" data-id="${r.id}">取り消す</button><button class="btn sm pri">スレッドで続ける</button></div></form>`,
+      done:`<div class="actions">${finish}</div>`,
+      failed:`<div class="err">${esc(r.error||'失敗しました')}</div><div class="actions"><button class="btn sm" data-act="run-close" data-id="${r.id}">閉じる</button></div>`,
     }[r.status]||'';
+    const body = r.status==='review' && r.plan ? `<details class="plan"><summary>計画を見る</summary><div class="mdbody">${md(r.plan)}</div></details>` : (r.status==='done'&&r.result?`<div class="mdbody">${md(r.result)}</div>`:'');
     return `<div class="runcard"><div class="runhd"><span class="chip run ${st.cls}">${icon('play')}${st.label}</span><span class="rtitle">${esc(r.task)}</span><span class="rcat">${esc(r.cat||'')}</span></div>
-      ${(wp=>wp?`<div class="wp ${wp.kind==='新規'?'new':''}">作業場所 <code>salon-os/${esc(wp.path.replace(/^\.?\/?/,''))}</code><b>${wp.kind}</b></div>`:'')(workplace(r))}
-      ${r.note?`<div class="hint">補足：${esc(r.note)}</div>`:''}
-      ${body?`<div class="mdbody">${body}</div>`:''}
-      ${r.session?`<details class="hint"><summary>Mac で続きを直接触るには</summary><code>cd ~/dev/salon-os && claude --resume ${esc(r.session)}</code></details>`:''}
+      ${wp?`<div class="wp ${wp.kind==='新規'?'new':''}">作業場所 <code>salon-os/${esc(wp.path.replace(/^\.?\/?/,''))}</code><b>${wp.kind}</b></div>`:''}
+      ${body}
+      ${r.session?`<details class="hint"><summary>Mac のターミナルで続きを触るには</summary><code>cd ~/dev/salon-os && claude --resume ${esc(r.session)}</code><br>（スレッドが動いている間は、スレッドの方を使ってください）</details>`:''}
       ${ctl}</div>`;
   };
-  return `<div class="runs">${list.length? list.map(card).join('') : '<div class="plain"><div class="empty">実行中・確認待ちのものはありません。タスクの右の ▶ から Claude に任せられます。</div></div>'}
+  return `<div class="runs">${list.length? list.map(card).join('') : '<div class="plain"><div class="empty">進行中のスレッドはありません。タスクの右の ▶ から Claude のスレッドを立てられます。</div></div>'}
     ${hist.length?`<div class="monthhd">最近の履歴</div><div class="plain">${hist.map(r=>`<div class="prow"><div class="t">${esc(r.task)}</div><div class="d">${RUN_ST[r.status].label}</div></div>`).join('')}</div>`:''}</div>`;
 }
 
@@ -705,7 +712,9 @@ function taskRow(cat, t, opts={}){
   if(t.prio) meta.push(`<span class="chip prio">${icon('flag')}高</span>`);
   if(!opts.parent && t.subs && t.subs.length) meta.push(`<span class="chip">サブ ${t.subs.length}件</span>`);
   const run = opts.parent===undefined ? runFor(cat, t.text) : null;
-  if(run) meta.push(`<span class="chip run ${RUN_ST[run.status].cls}" data-act="tab" data-k="runs">${icon('play')}${RUN_ST[run.status].label}</span>`);
+  if(run) meta.push(run.url && run.status==='thread'
+    ? `<a class="chip run ${RUN_ST[run.status].cls}" href="${esc(run.url)}" target="_blank" rel="noopener">${icon('play')}${RUN_ST[run.status].label}・開く</a>`
+    : `<span class="chip run ${RUN_ST[run.status].cls}" data-act="tab" data-k="runs">${icon('play')}${RUN_ST[run.status].label}</span>`);
   let h=`<div class="task${opts.parent!==undefined?' sub':''}">
     <button class="chk" title="完了にする" data-act="done" data-ref='${esc(JSON.stringify(ref))}' >${icon('check')}</button>
     <div class="tbody" data-act="edit" data-ref='${esc(JSON.stringify(ref))}'>
@@ -800,11 +809,11 @@ function render(){
 function viewModal(){
   const m=S.modal;
   if(m.type==='run') return `<div class="ov" data-act="close-ov"><form class="modal" data-act="run-start">
-    <h2>Claude で実行</h2>
+    <h2>Claude のスレッドで進める</h2>
     <div class="runtask">${esc(m.ref.text)}</div>
     <div class="field"><label>補足の指示（任意）</label><textarea class="inp" name="note" rows="3" placeholder="例：先月と同じ形式で。送る前に必ず見せて"></textarea></div>
-    <div class="hint">Mac の Claude Code がサロンOSのフォルダで、まず<b>計画と下書きだけ</b>を作ります（ファイル変更や送信はしません）。<br>計画は「実行」タブに届きます。内容を見て承認すると、実際の作業を始めます。<br>Mac が起動していないときは、起動したときに始まります。</div>
-    <div class="actions"><button type="button" class="btn" data-act="close">キャンセル</button><button class="btn pri">${icon('play').replace('<svg','<svg width="14" height="14"')} 計画を作る</button></div>
+    <div class="hint">Mac のサロンOSで Claude Code のスレッドが立ちます。スマホの Claude アプリや claude.ai の一覧に「AOS｜タスク名」で出てきます。<br>スレッドの中で <b>状況の確認 → 案の提案 → 進め方の確認 → 実行</b> の順に、相談しながら進めます。送信や公開の前には必ず確認が入ります。<br>Mac が起動していないときは、起動したときに始まります。</div>
+    <div class="actions"><button type="button" class="btn" data-act="close">キャンセル</button><button class="btn pri">${icon('play').replace('<svg','<svg width="14" height="14"')} スレッドを立てる</button></div>
   </form></div>`;
   if(m.type==='settings') return `<div class="ov" data-act="close-ov"><div class="modal">${catManager()}${settingsForm(true)}</div></div>`;
   const isEdit=m.type==='edit', d=m.draft;
@@ -875,6 +884,7 @@ function syncDraft(){
 
 // ===== イベント =====
 document.addEventListener('click', async e=>{
+  if(e.target.closest('a[href]')) return; // リンク（スレッドを開く）はそのまま開く
   const el=e.target.closest('[data-act]'); if(!el) return;
   const a=el.dataset.act;
   if(a==='close-ov'){ if(e.target===el){ S.modal=null; render(); } return; }
@@ -900,10 +910,8 @@ document.addEventListener('click', async e=>{
       if(!confirm(`カテゴリ「${n}」を削除しますか？`+(cnt?`\n中のタスク${cnt}件は${INBOX}に移ります。`:''))) return; deleteCategory(n); break; }
     case 'run-open': S.modal={type:'run', ref}; render(); setTimeout(()=>document.querySelector('form[data-act="run-start"] textarea')?.focus(),50); break;
     case 'run-cancel': if(confirm('この実行を取り消しますか？')) setRun(el.dataset.id,{status:'cancelled'},'取り消しました','dashboard: 実行を取り消し'); break;
-    case 'run-close': setRun(el.dataset.id,{status:'closed'},'閉じました','dashboard: 実行を閉じる'); break;
-    case 'run-retry': { const r=S.runs.find(x=>x.id===el.dataset.id); const back = r.plan && r.run_started ? 'approved' : 'queued'; setRun(r.id,{status:back,error:null},'もう一度依頼しました','dashboard: 実行をやり直し'); break; }
-    case 'run-replan': { const f=el.closest('form'); const fb=f.note.value.trim(); if(!fb){ toast('直してほしい点を書いてください',true); f.note.focus(); break; } setRun(el.dataset.id,{status:'queued',feedback:fb,plan:null},'計画し直しを依頼しました','dashboard: 計画し直しを依頼'); break; }
-    case 'run-complete': { const r=S.runs.find(x=>x.id===el.dataset.id); setRun(r.id,{status:'closed'},'閉じました','dashboard: 実行を閉じる'); if(findTask(S.sections,{cat:r.cat,text:r.task})) completeTask({cat:r.cat,text:r.task}); break; }
+    case 'run-close': if(confirm('スレッドを終えますか？（Mac で動いているスレッドを止めます。タスクは残ります）')) setRun(el.dataset.id,{status:'closed'},'スレッドを終えました','dashboard: スレッドを終える'); break;
+    case 'run-complete': { const r=S.runs.find(x=>x.id===el.dataset.id); if(!confirm(`「${r.task}」を完了にして、スレッドを終えますか？`)) break; setRun(r.id,{status:'closed'},'スレッドを終えました','dashboard: スレッドを終える'); if(findTask(S.sections,{cat:r.cat,text:r.task})) completeTask({cat:r.cat,text:r.task}); break; }
     case 'some-del': if(confirm(`「${el.dataset.text}」を削除しますか？`)) removeSomeday(el.dataset.text); break;
   }
 });
@@ -920,7 +928,7 @@ document.addEventListener('submit', async e=>{
   const f=e.target; const a=f.dataset.act; e.preventDefault();
   if(a==='quick'){ const v=f.q.value.trim(); if(!v) return; f.q.value=''; addTask(f.dataset.cat, {text:v,due:null,prio:false}); }
   if(a==='run-start'){ const ref=S.modal.ref, note=f.note.value.trim(); S.modal=null; startRun(ref, note); return; }
-  if(a==='run-approve'){ const note=f.note.value.trim(); setRun(f.dataset.id,{status:'approved',approve_note:note||null},'承認しました（Mac で実行が始まります）','dashboard: 計画を承認'); return; }
+  if(a==='run-resume'){ const note=f.note.value.trim(); setRun(f.dataset.id,{status:'queued',note:note||null,error:null},'スレッドを依頼しました（Mac で立ち上がります）','dashboard: スレッドで再開'); return; }
   if(a==='cat-add'){ const v=f.q.value.trim(); if(!v) return; const err=badCatName(v); if(err) return toast(err,true); f.q.value=''; addCategory(v); return; }
   if(a==='someday-add'){ const v=f.q.value.trim(); if(!v) return; f.q.value=''; addSomeday(v); }
   if(a==='import'){ const iss=S.issues.find(i=>i.number===+f.dataset.num); importIssue(iss, f.dest.value, f.due.value); }
