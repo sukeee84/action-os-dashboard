@@ -139,7 +139,7 @@ header{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 8
 
 /* モーダル */
 .ov{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:50;display:flex;align-items:center;justify-content:center;padding:16px}
-.modal{background:var(--panel);border-radius:18px;width:100%;max-width:760px;max-height:calc(100vh - 32px);overflow:auto;box-shadow:0 20px 50px rgba(0,0,0,.25);padding:18px}
+.modal{background:var(--panel);border-radius:18px;width:100%;max-width:880px;max-height:calc(100vh - 32px);overflow:auto;box-shadow:0 20px 50px rgba(0,0,0,.25);padding:18px}
 .modal h2{font-size:17px;margin:0 0 14px}
 .field{margin-bottom:14px}
 .field label{display:block;font-size:12px;color:var(--sub);margin-bottom:5px;font-weight:600}
@@ -175,7 +175,7 @@ header{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 8
 
 
 /* ===== 縦一列のリスト表示 ===== */
-main.wrap{max-width:880px}
+main.wrap,header .wrap{max-width:1080px}
 .board{display:flex;flex-direction:column;gap:26px;align-items:stretch}
 .col{background:transparent;border:0;box-shadow:none;border-radius:0;overflow:visible}
 .colhd{border-top:0;padding:0 2px 10px}
