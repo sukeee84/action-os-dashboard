@@ -697,7 +697,7 @@ function buildParentAsk(r){
   for(const x of r.subs||[]) lines.push(`  - その下のサブタスク: ${x}`);
   return `【Action OS から】（実行ID: ${r.id}）ダッシュボードの ▶ で、このスレッドのタスクの下にあるサブタスクを頼まれました。このスレッドのサイドセッション（子スレッド）として立ててください。
 
-${lines.join('\n')}${r.note?`\n補足（ユーザーより）: ${r.note}`:''}
+${lines.join('\n')}${r.note?`\n補足（ユーザーより）: ${r.note}`:''}${r.near_session?`\n\n途中の親タスク「${r.near_task}」にも別のスレッドがあります。その会話記録: ${sessionLog(r.near_session)}\n指示書を書くときに経緯が足りなければ、この記録から必要な部分だけ探して読んでください（長いので全部は読まない）。`:''}
 
 立て方:
 - start_session を initiation "user_asked" で使い、このスレッドの下に立てる（ユーザーがダッシュボードで頼んだもの）。
@@ -725,7 +725,9 @@ function openInDesktop(r){
 // サブタスクを親タスクのスレッドから立てられるか（Mac で、親タスクのスレッドが開いていて、その ID が分かっているとき）
 // 上の階層のタスクで開いている実行（近い順）。すぐ上の親にスレッドが無ければ、さらに上の親のスレッドを使う
 function ancestorRuns(ref){ const out=[]; let p=refPath(ref); while(p.length){ const r=runFor(mkRef(ref.cat, p[p.length-1], p.slice(0,-1))); if(r) out.push(r); p=p.slice(0,-1); } return out; }
-function parentRunFor(ref){ if(ref.parent===undefined || !IS_MAC_DESKTOP) return null; return ancestorRuns(ref).find(pr=>pr.status==='opened' && pr.desk_local) || null; }
+// 子スレッドを立ててもらう先は、開いているうちで「いちばん上」の親タスクのスレッド（孫でも、途中の親にスレッドがあっても、いちばん上の親の下にそろえる）
+function parentRunFor(ref){ if(ref.parent===undefined || !IS_MAC_DESKTOP) return null; return ancestorRuns(ref).filter(pr=>pr.status==='opened' && pr.desk_local).pop() || null; }
+const threadName = r => (S.progress[r.id] && S.progress[r.id].title) || r.task;
 function startRun(ref, note, extra={}){
   const f=findTask(S.sections, ref);
   const sub = ref.parent!==undefined;
@@ -738,7 +740,9 @@ function startRun(ref, note, extra={}){
     const pr=ancestorRuns(ref).find(x=>x.desk_session);  // 親タスク（無ければさらに上）で開いているスレッドがあれば、その会話記録を参考に渡す
     if(pr && pr.desk_session) run.parent_session=pr.desk_session;
     const pp=parentRunFor(ref);  // 親タスクのスレッドから子スレッドとして立ててもらう
-    if(pp){ run.via='parent'; run.parent_run=pp.id; run.parent_local=pp.desk_local; }
+    if(pp){ run.via='parent'; run.parent_run=pp.id; run.parent_local=pp.desk_local;
+      // 途中の親タスクにもスレッドがあれば、その会話記録を指示書づくりの参考に渡す
+      if(pr && pr.id!==pp.id){ run.near_session=pr.desk_session; run.near_task=pr.task; } }
   }
   run.prompt = run.via==='parent' ? buildParentAsk(run) : buildPrompt(run);
   const here = IS_MAC_DESKTOP && S.workdir;
@@ -1009,7 +1013,7 @@ function viewModal(){
     <div class="runtask">${esc(m.ref.text)}</div>${m.ref.parent!==undefined?`<div class="runparent">親タスク：${esc(m.ref.parent)}</div>`:''}
     <div class="field"><label>補足の指示（任意）</label><textarea class="inp" name="note" rows="3" placeholder="例：先月と同じ形式で。送る前に必ず見せて"></textarea></div>
     ${parentRunFor(m.ref)
-      ? `<div class="hint">親タスクのスレッドが開きます。依頼文はコピー済みなので、そのスレッドで <b>⌘V → Enter</b> を押してください。親スレッドが経緯を踏まえた指示書を書き、このサブタスクの<b>子スレッド</b>を立てます（サイドバーで親の下に並び、区切りごとに親へ報告が届きます）。<br>子スレッドの中では <b>状況の確認 → 案の提案 → 進め方の確認 → 実行</b> の順に、相談しながら進めます。送信や公開の前には必ず確認が入ります。</div>`
+      ? `<div class="hint">親タスクのスレッド「<b>${esc(threadName(parentRunFor(m.ref)))}</b>」が開きます。依頼文はコピー済みなので、そのスレッドで <b>⌘V → Enter</b> を押してください。親スレッドが経緯を踏まえた指示書を書き、このサブタスクの<b>子スレッド</b>を立てます（サイドバーで親の下に並び、区切りごとに親へ報告が届きます）。<br>子スレッドの中では <b>状況の確認 → 案の提案 → 進め方の確認 → 実行</b> の順に、相談しながら進めます。送信や公開の前には必ず確認が入ります。</div>`
       : `<div class="hint">${m.ref.parent!==undefined?'親タスクのスレッドがまだ無いため、独立したスレッドで開きます（親タスクの文も一緒に渡し、作業はこのサブタスクの範囲にとどめるよう伝えます。親タスクの ▶ を先に押しておくと、親スレッドの下に立てられます）。<br>':''}Claude デスクトップアプリに、サロンOSのフォルダで新しいスレッドが開きます（指示は入力済み。<b>Enter を押すと始まります</b>）。<br>スレッドの中で <b>状況の確認 → 案の提案 → 進め方の確認 → 実行</b> の順に、相談しながら進めます。送信や公開の前には必ず確認が入ります。</div>`}
     <div class="actions"><button type="button" class="btn" data-act="close">キャンセル</button><button class="btn pri">${icon('play').replace('<svg','<svg width="14" height="14"')} ${parentRunFor(m.ref)?'コピーして親スレッドを開く':'デスクトップアプリで開く'}</button></div>
   </form></div>`;
