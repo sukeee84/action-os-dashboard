@@ -185,7 +185,7 @@ main.wrap{max-width:880px}
 .list .empty{padding:4px 2px}
 .task{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;align-items:center;box-shadow:var(--shadow);transition:border-color .12s}
 .task:hover{background:var(--panel);border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
-.task.sub{margin-left:34px;padding:8px 12px;box-shadow:none;background:color-mix(in srgb,var(--panel) 60%,var(--bg))}
+.task.sub{margin-left:calc(34px * var(--d,1));padding:8px 12px;box-shadow:none;background:color-mix(in srgb,var(--panel) 60%,var(--bg))}
 .tbody{display:flex;align-items:center;gap:12px}
 .ttext{flex:1;min-width:0}
 .meta{margin-top:0;flex:none;justify-content:flex-end}
@@ -207,6 +207,10 @@ main.wrap{max-width:880px}
 .runhd .rparent{flex:1 1 100%;order:4;font-size:12px;color:var(--sub);line-height:1.5}
 .chip.run{cursor:pointer}
 .chip.run svg{width:10px;height:10px}
+.chip.tog{border:1px solid var(--line);cursor:pointer;font:inherit;font-size:12px;padding:2px 9px 2px 5px}
+.chip.tog svg{width:12px;height:12px;transition:transform .15s}
+.chip.tog.on svg{transform:rotate(90deg)}
+.chip.tog:hover{border-color:var(--accent);color:var(--text)}
 .chip.run.wait{background:var(--panel2);color:var(--sub)}
 .chip.run.busy{background:var(--accent-soft);color:var(--accent)}
 .chip.run.busy svg{animation:pulse 1.2s ease-in-out infinite}
@@ -258,7 +262,7 @@ a.btn{text-decoration:none;display:inline-flex;align-items:center}
 @media (max-width:640px){
   .tbody{flex-direction:column;align-items:flex-start;gap:4px}
   .meta{justify-content:flex-start}
-  .task.sub{margin-left:22px}
+  .task.sub{margin-left:calc(22px * var(--d,1))}
 }
 @media (max-width:640px){
   .stats{grid-template-columns:repeat(2,1fr);gap:8px;margin-top:12px}
@@ -283,7 +287,7 @@ const catNames = () => S.sections.map(s=>s.name);
 const PALETTE = ['--c-dev','--c-salon','--c-kaitori','--c-kojin','--c-p5','--c-p6','--c-p7'];
 const catColor = name => name===INBOX ? '--c-misc' : PALETTE[(catNames().filter(n=>n!==INBOX).indexOf(name)) % PALETTE.length] || '--c-misc';
 const WD = ['日','月','火','水','木','金','土'];
-const LS = {token:'aos.token', repo:'aos.repo', tab:'aos.tab'};
+const LS = {token:'aos.token', repo:'aos.repo', tab:'aos.tab', open:'aos.open'};
 const DEFAULT_REPO = 'sukeee84/action-os';
 const BRANCH = 'main';
 
@@ -296,6 +300,7 @@ const ICON = {
   flag:'<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
   x:'<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   up:'<polyline points="18 15 12 9 6 15"/>',
+  chev:'<polyline points="9 6 15 12 9 18"/>',
   play:'<polygon points="6 4 20 12 6 20 6 4"/>',
 };
 const icon = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICON[n]}</svg>`;
@@ -332,19 +337,20 @@ function fmtTask(t, indent=''){
   return `${indent}- [ ] ${t.text}${t.due?` 📅${t.due}`:''}${t.prio?' 🔺':''}`;
 }
 function parseTodo(text){
-  const sections=[]; let cur=null;
+  const sections=[]; let cur=null, stack=[];  // stack[d] = いまの深さ d のタスク（サブタスクは2スペースずつ深くなる）
   for(const line of text.replace(/\r/g,'').split('\n')){
     const h=line.match(/^##\s+(.+?)\s*$/);
-    if(h){ cur={name:h[1], items:[]}; sections.push(cur); continue; }
+    if(h){ cur={name:h[1], items:[]}; sections.push(cur); stack=[]; continue; }
     if(!cur) continue;
     const m=line.match(TASK_RE);
     if(m){
       const t={...parseBody(m[3]), subs:[]};
-      if(m[1].length>=2){
-        const parent=[...cur.items].reverse().find(i=>i.text!==undefined);
-        if(parent){ parent.subs.push(t); continue; }
+      const d=Math.floor(m[1].replace(/\t/g,'  ').length/2);
+      if(d>0 && stack.length){
+        const pd=Math.min(d,stack.length)-1;
+        stack[pd].subs.push(t); stack.length=pd+1; stack.push(t); continue;
       }
-      cur.items.push(t); continue;
+      cur.items.push(t); stack=[t]; continue;
     }
     if(line.trim()) cur.items.push({raw:line});
   }
@@ -361,8 +367,8 @@ function serializeTodo(sections){
       out+='\n';
       for(const it of s.items){
         if(it.raw!==undefined){ out+=it.raw+'\n'; continue; }
-        out+=fmtTask(it)+'\n';
-        for(const st of it.subs) out+=fmtTask(st,'  ')+'\n';
+        const put=(t,d)=>{ out+=fmtTask(t,'  '.repeat(d))+'\n'; for(const st of t.subs||[]) put(st,d+1); };
+        put(it,0);
       }
     }
   }
@@ -375,16 +381,17 @@ function serializeSomeday(items){ return '# いつかやる\n' + (items.length? 
 function parseDone(text){
   return text.replace(/\r/g,'').split('\n').map(l=>l.match(/^- \[[xX]\] (.*?)\s*(?:✅\s*(\d{4}-\d{2}-\d{2}))?\s*$/)).filter(Boolean).map(m=>({text:m[1], date:m[2]||''}));
 }
+// タスクの指し方: {cat, text} ／ サブタスクは parent（すぐ上の親）も持つ。2段より深いときは path（いちばん上から親までの並び）も持つ
+const refPath = ref => ref.path || (ref.parent!==undefined ? [ref.parent] : []);
+const mkRef = (cat, text, path=[]) => path.length ? {cat, text, parent:path[path.length-1], ...(path.length>1?{path:[...path]}:{})} : {cat, text};
+const samePath = (a, b) => a.length===b.length && a.every((x,i)=>x===b[i]);
 function findTask(sections, ref){
   const sec=sections.find(s=>s.name===ref.cat); if(!sec) return null;
-  const tasks=sec.items.filter(i=>i.text!==undefined);
-  if(ref.parent!==undefined){
-    const p=tasks.find(t=>t.text===ref.parent); if(!p) return null;
-    const idx=p.subs.findIndex(t=>t.text===ref.text); if(idx<0) return null;
-    return {sec, parent:p, task:p.subs[idx], remove:()=>p.subs.splice(idx,1)};
-  }
-  const t=tasks.find(t=>t.text===ref.text); if(!t) return null;
-  return {sec, task:t, remove:()=>sec.items.splice(sec.items.indexOf(t),1)};
+  let list=sec.items.filter(i=>i.text!==undefined), parent=null;
+  for(const name of refPath(ref)){ parent=list.find(t=>t.text===name); if(!parent) return null; list=parent.subs; }
+  const t=list.find(t=>t.text===ref.text); if(!t) return null;
+  if(parent) return {sec, parent, task:t, remove:()=>{ const i=parent.subs.indexOf(t); if(i>=0) parent.subs.splice(i,1); }};
+  return {sec, task:t, remove:()=>{ const i=sec.items.indexOf(t); if(i>=0) sec.items.splice(i,1); }};
 }
 
 // ===== 保存先（GitHub / デモ） =====
@@ -515,7 +522,9 @@ function completeTask(ref){
   const today=todayStr(), ym=monthOf(today);
   const label = ref.parent!==undefined ? `${ref.text}（${ref.parent}）` : ref.text;
   // このタスクで開いている実行（スレッド）があれば一緒に閉じる
-  const openRuns = S.runs.filter(r=>runOpen(r) && (runIs(r,ref.cat,ref.text,ref.parent) || (ref.parent===undefined && r.cat===ref.cat && r.parent===ref.text))).map(r=>r.id);
+  // （下にあるサブタスクの実行も閉じる）
+  const below=[...refPath(ref), ref.text];
+  const openRuns = S.runs.filter(r=>runOpen(r) && (runIs(r,ref) || (r.cat===ref.cat && samePath(runPath(r).slice(0,below.length), below)))).map(r=>r.id);
   enqueue('完了にしました', ()=>{ removeRef(ref)(S.sections); (S.done[ym]=S.done[ym]||[]).push({text:label,date:today}); for(const id of openRuns) patchRun(id,{status:'closed'})(S.runs); }, async ()=>{
     if(openRuns.length) await runsFile(runs=>{ let hit=false; for(const id of openRuns){ if(patchRun(id,{status:'closed'})(runs)!==false) hit=true; } if(!hit) return false; }, `dashboard: 「${label}」の実行を閉じる`).catch(e=>{ if(!e.gone) throw e; });
     await opsTodo(removeRef(ref), `dashboard: 「${label}」を完了`);
@@ -528,9 +537,14 @@ function completeTask(ref){
 function updateTask(ref, patch){
   const fn=s=>{
     const f=findTask(s,ref); if(!f) return false;
-    const subs=(patch.subs ?? f.task.subs).map(x=>({...x}));
     Object.assign(f.task, {text:patch.text, due:patch.due, prio:patch.prio});
-    if(ref.parent===undefined) f.task.subs=subs;
+    if(patch.subs) f.task.subs=JSON.parse(JSON.stringify(patch.subs));
+    // 親タスクを変える（同じカテゴリの中で、別のタスクの下へ／いちばん上へ）
+    if(patch.moveTo && !samePath(patch.moveTo, refPath(ref))){
+      const to=patch.moveTo, dest = to.length ? findTask(s, mkRef(ref.cat, to[to.length-1], to.slice(0,-1))) : null;
+      if(to.length && !dest) return false;
+      f.remove(); (dest ? dest.task.subs : f.sec.items).push(f.task); return;
+    }
     if(patch.cat && patch.cat!==ref.cat && ref.parent===undefined){
       f.remove(); s.find(x=>x.name===patch.cat).items.push(f.task);
     }
@@ -619,9 +633,10 @@ const RUN_ST = {
 };
 function parseRuns(text){ try{ const d=JSON.parse(text||'{}'); if(d.workdir) S.workdir=d.workdir; return Array.isArray(d.runs)?d.runs.filter(r=>RUN_ST[r.status]):[]; }catch{ return []; } }
 const runOpen = r => r.status!=='cancelled' && r.status!=='closed';
-const runIs = (r, cat, text, parent) => r.cat===cat && r.task===text && (r.parent??undefined)===parent;
-function runFor(cat, text, parent){ for(let i=S.runs.length-1;i>=0;i--){ const r=S.runs[i]; if(runIs(r,cat,text,parent) && runOpen(r)) return r; } return null; }
-const runRef = r => r.parent ? {cat:r.cat, text:r.task, parent:r.parent} : {cat:r.cat, text:r.task};
+const runPath = r => r.path || (r.parent ? [r.parent] : []);
+const runIs = (r, ref) => r.cat===ref.cat && r.task===ref.text && samePath(runPath(r), refPath(ref));
+function runFor(ref){ for(let i=S.runs.length-1;i>=0;i--){ const r=S.runs[i]; if(runIs(r,ref) && runOpen(r)) return r; } return null; }
+const runRef = r => mkRef(r.cat, r.task, runPath(r));
 const nowJst = () => new Date(Date.now()+9*3600e3).toISOString().slice(0,19);
 function runsFile(fn, msg){
   return mutateFile('runs.json', t=>{ let d; try{ d=JSON.parse(t||'{}'); }catch{ d={}; } if(!Array.isArray(d.runs)) d.runs=[]; if(fn(d.runs)===false) return false; d.runs=d.runs.slice(-60); return JSON.stringify(d,null,1)+'\n'; }, msg, '{"runs":[]}\n');
@@ -653,7 +668,7 @@ function subContext(r){
   return t;
 }
 function buildPrompt(r){
-  const lines=[`タスク: ${r.task}`]; if(r.parent) lines.push(`親タスク: ${r.parent}`); if(r.cat) lines.push(`カテゴリ: ${r.cat}`); if(r.due) lines.push(`期限: ${r.due}`);
+  const lines=[`タスク: ${r.task}`]; if(r.parent) lines.push(`親タスク: ${r.parent}`); if(r.path && r.path.length>1) lines.push(`上の階層（いちばん上から）: ${r.path.join(' ＞ ')}`); if(r.cat) lines.push(`カテゴリ: ${r.cat}`); if(r.due) lines.push(`期限: ${r.due}`);
   if(r.parent && r.parent_due) lines.push(`親タスクの期限: ${r.parent_due}`);
   for(const x of r.subs||[]) lines.push(`  - サブタスク: ${x}`);
   if(r.prev_session){
@@ -678,8 +693,8 @@ ${RULES}
 // サブタスクを、親タスクのスレッドから子スレッド（サイドセッション）として立ててもらうための依頼文。
 // デスクトップアプリのリンクは既存のスレッドの入力欄に文を入れられないので、コピーして親スレッドを開き、⌘V → Enter してもらう
 function buildParentAsk(r){
-  const lines=[`サブタスク: ${r.task}`]; if(r.cat) lines.push(`カテゴリ: ${r.cat}`); if(r.due) lines.push(`期限: ${r.due}`);
-  return `【Action OS から】（実行ID: ${r.id}）ダッシュボードの ▶ で、このスレッドのタスクのサブタスクを頼まれました。このスレッドのサイドセッション（子スレッド）として立ててください。
+  const lines=[`サブタスク: ${r.task}`]; if(r.path && r.path.length>1) lines.push(`上の階層（いちばん上から）: ${r.path.join(' ＞ ')}`); if(r.cat) lines.push(`カテゴリ: ${r.cat}`); if(r.due) lines.push(`期限: ${r.due}`);
+  return `【Action OS から】（実行ID: ${r.id}）ダッシュボードの ▶ で、このスレッドのタスクの下にあるサブタスクを頼まれました。このスレッドのサイドセッション（子スレッド）として立ててください。
 
 ${lines.join('\n')}${r.note?`\n補足（ユーザーより）: ${r.note}`:''}
 
@@ -707,16 +722,19 @@ function openInDesktop(r){
   location.href=deepLink(r.prompt||buildPrompt(r)); return true;
 }
 // サブタスクを親タスクのスレッドから立てられるか（Mac で、親タスクのスレッドが開いていて、その ID が分かっているとき）
-function parentRunFor(ref){ if(ref.parent===undefined || !IS_MAC_DESKTOP) return null; const pr=runFor(ref.cat, ref.parent); return pr && pr.status==='opened' && pr.desk_local ? pr : null; }
+// 上の階層のタスクで開いている実行（近い順）。すぐ上の親にスレッドが無ければ、さらに上の親のスレッドを使う
+function ancestorRuns(ref){ const out=[]; let p=refPath(ref); while(p.length){ const r=runFor(mkRef(ref.cat, p[p.length-1], p.slice(0,-1))); if(r) out.push(r); p=p.slice(0,-1); } return out; }
+function parentRunFor(ref){ if(ref.parent===undefined || !IS_MAC_DESKTOP) return null; return ancestorRuns(ref).find(pr=>pr.status==='opened' && pr.desk_local) || null; }
 function startRun(ref, note, extra={}){
   const f=findTask(S.sections, ref);
   const sub = ref.parent!==undefined;
   const run={id:'r'+Date.now().toString(36)+Math.random().toString(36).slice(2,6), task:ref.text, cat:ref.cat, due:f?.task.due||null,
-    subs:sub?[]:(f?.task.subs||[]).map(x=>x.text), note:note||null, created:nowJst(), updated:nowJst(), ...extra};
+    subs:(f?.task.subs||[]).map(x=>x.text), note:note||null, created:nowJst(), updated:nowJst(), ...extra};
   if(sub){
     run.parent=ref.parent; run.parent_due=f?.parent.due||null;
+    if(refPath(ref).length>1) run.path=[...refPath(ref)];
     run.siblings=(f?.parent.subs||[]).filter(x=>x.text!==ref.text).map(x=>x.text);
-    const pr=runFor(ref.cat, ref.parent);  // 親タスクで開いているスレッドがあれば、その会話記録を参考に渡す
+    const pr=ancestorRuns(ref).find(x=>x.desk_session);  // 親タスク（無ければさらに上）で開いているスレッドがあれば、その会話記録を参考に渡す
     if(pr && pr.desk_session) run.parent_session=pr.desk_session;
     const pp=parentRunFor(ref);  // 親タスクのスレッドから子スレッドとして立ててもらう
     if(pp){ run.via='parent'; run.parent_run=pp.id; run.parent_local=pp.desk_local; }
@@ -869,26 +887,35 @@ function renderToast(){
   el.className='toast'+(S.toast.err?' err':''); el.textContent=S.toast.msg;
 }
 
+// サブのサブ以降（サブタスクの下にさらにサブタスクがあるもの）は開閉できる。開いているものだけこの端末に覚えておく（最初は閉じている）
+const openKey = (cat, path, text) => JSON.stringify([cat, ...path, text]);
+function isOpen(key){ try{ return JSON.parse(safeGet(LS.open)||'[]').includes(key); }catch{ return false; } }
+function setOpen(key, on){ let a=[]; try{ a=JSON.parse(safeGet(LS.open)||'[]'); }catch{} a=a.filter(x=>x!==key); if(on) a.push(key); safeSet(LS.open, JSON.stringify(a.slice(-200))); }
 function taskRow(cat, t, opts={}){
-  const ref = opts.parent!==undefined ? {cat, text:t.text, parent:opts.parent} : {cat, text:t.text};
+  const path = opts.path || [];
+  const ref = mkRef(cat, t.text, path), sub = path.length>0;
+  const kids = t.subs || [];
+  const key = sub && kids.length ? openKey(cat, path, t.text) : null;
+  const open = key ? isOpen(key) : true;
   const di=dueInfo(t.due);
   const meta=[];
   if(opts.showCat) meta.push(`<span class="chip cat" style="--cc:var(${catColor(cat)})"><i></i>${esc(cat)}</span>`);
   if(di) meta.push(`<span class="chip ${di.cls}">${icon('cal')}${esc(di.label)}</span>`);
   if(t.prio) meta.push(`<span class="chip prio">${icon('flag')}高</span>`);
-  if(!opts.parent && t.subs && t.subs.length) meta.push(`<span class="chip">サブ ${t.subs.length}件</span>`);
-  const run = runFor(cat, t.text, opts.parent);
+  if(key && !opts.flat) meta.push(`<button type="button" class="chip tog${open?' on':''}" data-act="toggle" data-key="${esc(key)}" title="${open?'サブタスクを閉じる':'サブタスクを開く'}">${icon('chev')}サブ ${kids.length}件</button>`);
+  else if(kids.length) meta.push(`<span class="chip">サブ ${kids.length}件</span>`);
+  const run = runFor(ref);
   const pgr = run && run.status==='opened' ? S.progress[run.id] : null;
   if(pgr){ const st=PG_ST[pgr.state]||PG_ST.working; meta.push(`<span class="chip run ${st.cls}" data-act="tab" data-k="runs">${icon('play')}${st.label}${pgr.state==='working'&&pgr.doing?`・${esc(pgr.doing.replace(/しています$|ています$/,'中'))}`:''}</span>`); }
   else if(run) meta.push(run.url && run.status==='thread'
     ? `<a class="chip run ${RUN_ST[run.status].cls}" href="${esc(run.url)}" target="_blank" rel="noopener">${icon('play')}${RUN_ST[run.status].label}・開く</a>`
     : `<span class="chip run ${RUN_ST[run.status].cls}" data-act="tab" data-k="runs">${icon('play')}${RUN_ST[run.status].label}</span>`);
-  let h=`<div class="task${opts.parent!==undefined?' sub':''}">
+  let h=`<div class="task${sub?' sub':''}"${sub?` style="--d:${path.length}"`:''}>
     <button class="chk" title="完了にする" data-act="done" data-ref='${esc(JSON.stringify(ref))}' >${icon('check')}</button>
     <div class="tbody" data-act="edit" data-ref='${esc(JSON.stringify(ref))}'>
       <div class="ttext">${esc(t.text)}</div>${meta.length?`<div class="meta">${meta.join('')}</div>`:''}
-    </div>${!run&&IS_MAC_DESKTOP?`<button class="runbtn" title="${opts.parent!==undefined?'このサブタスクを Claude で実行':'Claude で実行'}" data-act="run-open" data-ref='${esc(JSON.stringify(ref))}'>${icon('play')}</button>`:''}</div>`;
-  if(!opts.parent && !opts.flat) for(const st of t.subs) h+=taskRow(cat, st, {parent:t.text});
+    </div>${!run&&IS_MAC_DESKTOP?`<button class="runbtn" title="${sub?'このサブタスクを Claude で実行':'Claude で実行'}" data-act="run-open" data-ref='${esc(JSON.stringify(ref))}'>${icon('play')}</button>`:''}</div>`;
+  if(!opts.flat && open) for(const st of kids) h+=taskRow(cat, st, {path:[...path, t.text]});
   return h;
 }
 
@@ -1005,7 +1032,8 @@ function viewModal(){
     <div class="field"><label>優先度</label><div class="seg">
       <button type="button" class="${!d.prio?'on':''}" data-act="set" data-f="prio" data-v="">通常</button>
       <button type="button" class="${d.prio?'on':''}" data-act="set" data-f="prio" data-v="1">🔺 高</button></div></div>
-    ${isEdit&&m.ref.parent===undefined?`<div class="field"><label>サブタスク</label><div class="subl">
+    ${isEdit?moveField(m.ref, d):''}
+    ${isEdit?`<div class="field"><label>サブタスク</label><div class="subl">
       ${d.subs.map((s,i)=>`<div class="row"><input class="inp" data-sub="${i}" value="${esc(s.text)}"><button type="button" class="iconbtn" data-act="sub-del" data-i="${i}" title="外す">${icon('x')}</button></div>`).join('')}
       <div class="row"><input class="inp" data-newsub placeholder="サブタスクを追加（Enter）" autocomplete="off"><button type="button" class="iconbtn" data-act="sub-add">${icon('plus')}</button></div>
     </div></div>`:''}
@@ -1015,6 +1043,17 @@ function viewModal(){
       <button class="btn pri" >${isEdit?'保存':'追加'}</button>
     </div>
   </form></div>`;
+}
+// 親タスクを変える選択肢（同じカテゴリのタスク。自分と自分の下にあるものは選べない）
+function moveField(ref, d){
+  const sec=S.sections.find(s=>s.name===ref.cat); if(!sec) return '';
+  const self=[...refPath(ref), ref.text], opts=[[JSON.stringify([]), 'なし（いちばん上のタスクにする）']];
+  const walk=(list, path)=>{ for(const t of list){ if(t.text===undefined) continue; const p=[...path, t.text];
+    if(samePath(p.slice(0,self.length), self)) continue;
+    opts.push([JSON.stringify(p), '　'.repeat(path.length)+(path.length?'└ ':'')+t.text]); walk(t.subs||[], p); } };
+  walk(sec.items, []);
+  if(opts.length<2) return '';
+  return `<div class="field"><label>親タスク（どのタスクの下に置くか）</label><select class="inp" name="moveto">${opts.map(([v,l])=>`<option value="${esc(v)}" ${v===d.moveTo?'selected':''}>${esc(l)}</option>`).join('')}</select></div>`;
 }
 function catManager(){
   const names=catNames();
@@ -1048,7 +1087,7 @@ function viewSetup(){ return `<div class="wrap"><div class="setup"><h1>Action OS
 
 function openEdit(ref){
   const f=findTask(S.sections, ref); if(!f) return;
-  S.modal={type:'edit', ref, draft:{text:f.task.text, cat:ref.cat, due:f.task.due||'', prio:f.task.prio, subs:(f.task.subs||[]).map(s=>({...s}))}};
+  S.modal={type:'edit', ref, draft:{text:f.task.text, cat:ref.cat, due:f.task.due||'', prio:f.task.prio, subs:(f.task.subs||[]).map(s=>({...s})), moveTo:JSON.stringify(refPath(ref))}};
   render();
 }
 function syncDraft(){
@@ -1056,6 +1095,7 @@ function syncDraft(){
   m.draft.text=form.text.value; m.draft.due=form.due.value;
   form.querySelectorAll('[data-sub]').forEach(i=>{ m.draft.subs[+i.dataset.sub].text=i.value; });
   const ns=form.querySelector('[data-newsub]'); m.draft.newsub=ns?ns.value:'';
+  if(form.moveto) m.draft.moveTo=form.moveto.value;
 }
 
 // ===== イベント =====
@@ -1076,6 +1116,7 @@ document.addEventListener('click', async e=>{
     case 'close': S.modal=null; render(); break;
     case 'done': { const row=el.closest('.task'); row&&(row.style.opacity='.35'); completeTask(ref); break; }
     case 'edit': openEdit(ref); break;
+    case 'toggle': { const k=el.dataset.key; setOpen(k, !isOpen(k)); render(); break; }
     case 'set': { syncDraft(); const d=S.modal.draft, f=el.dataset.f, v=el.dataset.v; d[f]= f==='prio'? !!v : v; render(); break; }
     case 'sub-add': { syncDraft(); const d=S.modal.draft; if(d.newsub&&d.newsub.trim()) d.subs.push({text:d.newsub.trim(),due:null,prio:false}); d.newsub=''; render(); document.querySelector('[data-newsub]')?.focus(); break; }
     case 'sub-del': { syncDraft(); S.modal.draft.subs.splice(+el.dataset.i,1); render(); break; }
@@ -1112,10 +1153,10 @@ document.addEventListener('submit', async e=>{
   if(a==='save-task'){
     syncDraft(); const m=S.modal, d=m.draft; const text=d.text.replace(/📅|🔺/g,'').trim(); if(!text) return;
     if(d.newsub && d.newsub.trim()) d.subs.push({text:d.newsub.trim(),due:null,prio:false});
-    const subs=d.subs.filter(s=>s.text.trim()).map(s=>({...s,text:s.text.trim(),subs:[]}));
+    const subs=d.subs.filter(s=>s.text.trim()).map(s=>({...s,text:s.text.trim(),subs:s.subs||[]}));  // 孫以下はそのまま残す
     S.modal=null; render();
     if(m.type==='add') addTask(d.cat, {text, due:d.due||null, prio:d.prio});
-    else updateTask(m.ref, {text, due:d.due||null, prio:d.prio, cat:d.cat, subs: m.ref.parent===undefined?subs:undefined});
+    else { let moveTo=null; try{ moveTo=JSON.parse(d.moveTo||'null'); }catch{} updateTask(m.ref, {text, due:d.due||null, prio:d.prio, cat:d.cat, subs, moveTo}); }
   }
   if(a==='save-settings'){
     const repo=f.repo.value.trim(); const token=f.token.value.trim()||safeGet(LS.token);
