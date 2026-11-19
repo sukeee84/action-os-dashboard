@@ -549,7 +549,29 @@ function updateTask(ref, patch){
       f.remove(); s.find(x=>x.name===patch.cat).items.push(f.task);
     }
   };
-  enqueue('更新しました', ()=>fn(S.sections), ()=>opsTodo(fn, `dashboard: 「${patch.text}」を更新`));
+  // 名前・置き場所・カテゴリが変わったら、そのタスク（と下のタスク）の実行の記録も合わせる
+  // （合わせないと、実行係が「todo.md から消えたタスク」とみなして実行を閉じてしまう）
+  const oldPath=refPath(ref), moved=patch.moveTo && !samePath(patch.moveTo, oldPath);
+  const newPath=moved ? patch.moveTo : oldPath, newCat=(!moved && patch.cat && ref.parent===undefined) ? patch.cat : ref.cat;
+  const fix = (patch.text!==ref.text || moved || newCat!==ref.cat) ? runsRenamer(ref.cat, oldPath, ref.text, newCat, newPath, patch.text) : null;
+  const touches = fix && S.runs.some(r=>runOpen(r) && r.cat===ref.cat && (r.task===ref.text || runPath(r).includes(ref.text)));
+  enqueue('更新しました', ()=>{ fn(S.sections); if(touches) fix(S.runs); }, async ()=>{
+    await opsTodo(fn, `dashboard: 「${patch.text}」を更新`);
+    if(touches) await runsFile(fix, `dashboard: 「${patch.text}」の実行の記録を合わせる`).catch(e=>{ if(!e.gone) throw e; });
+  });
+}
+function runsRenamer(cat, oldPath, oldText, newCat, newPath, newText){
+  const oldFull=[...oldPath, oldText], newFull=[...newPath, newText];
+  const setPath=(r,p)=>{ delete r.parent; delete r.path; if(p.length){ r.parent=p[p.length-1]; if(p.length>1) r.path=[...p]; } };
+  return runs=>{ let hit=false;
+    for(const r of runs){
+      if(!runOpen(r) || r.cat!==cat) continue;
+      const rp=runPath(r);
+      if(r.task===oldText && samePath(rp, oldPath)){ r.task=newText; setPath(r, newPath); r.cat=newCat; hit=true; }
+      else if(rp.length>=oldFull.length && samePath(rp.slice(0,oldFull.length), oldFull)){ setPath(r, [...newFull, ...rp.slice(oldFull.length)]); r.cat=newCat; hit=true; }
+    }
+    if(!hit) return false;
+  };
 }
 function deleteTask(ref){
   enqueue('削除しました', ()=>removeRef(ref)(S.sections), ()=>opsTodo(removeRef(ref), `dashboard: 「${ref.text}」を削除`));
@@ -854,7 +876,7 @@ function viewRuns(){
       ${ctl}</div>`;
   };
   return `<div class="runs">${list.length? list.map(card).join('') : `<div class="plain"><div class="empty">進行中のスレッドはありません。${IS_MAC_DESKTOP?'':'Mac のダッシュボードで、'}タスクの右の ▶ から Claude のスレッドを立てられます。</div></div>`}
-    ${hist.length?`<div class="monthhd">最近の履歴</div><div class="plain">${hist.map(r=>`<div class="prow"><div class="t">${esc(r.task)}${r.parent?`<div class="hint">親タスク：${esc(r.parent)}</div>`:''}</div><div class="d">${RUN_ST[r.status].label}</div></div>`).join('')}</div>`:''}</div>`;
+    ${hist.length?`<div class="monthhd">最近の履歴</div><div class="plain">${hist.map(r=>`<div class="prow"><div class="t">${esc(r.task)}${r.parent?`<div class="hint">親タスク：${esc(r.parent)}</div>`:''}${r.closed_why?`<div class="hint">自動で閉じました（${esc(r.closed_why)}）</div>`:''}</div><div class="d">${RUN_ST[r.status].label}</div></div>`).join('')}</div>`:''}</div>`;
 }
 
 // ===== 集計 =====
