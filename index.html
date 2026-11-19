@@ -694,6 +694,7 @@ ${RULES}
 // デスクトップアプリのリンクは既存のスレッドの入力欄に文を入れられないので、コピーして親スレッドを開き、⌘V → Enter してもらう
 function buildParentAsk(r){
   const lines=[`サブタスク: ${r.task}`]; if(r.path && r.path.length>1) lines.push(`上の階層（いちばん上から）: ${r.path.join(' ＞ ')}`); if(r.cat) lines.push(`カテゴリ: ${r.cat}`); if(r.due) lines.push(`期限: ${r.due}`);
+  for(const x of r.subs||[]) lines.push(`  - その下のサブタスク: ${x}`);
   return `【Action OS から】（実行ID: ${r.id}）ダッシュボードの ▶ で、このスレッドのタスクの下にあるサブタスクを頼まれました。このスレッドのサイドセッション（子スレッド）として立ててください。
 
 ${lines.join('\n')}${r.note?`\n補足（ユーザーより）: ${r.note}`:''}
