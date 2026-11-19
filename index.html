@@ -553,8 +553,13 @@ function updateTask(ref, patch){
   // （合わせないと、実行係が「todo.md から消えたタスク」とみなして実行を閉じてしまう）
   const oldPath=refPath(ref), moved=patch.moveTo && !samePath(patch.moveTo, oldPath);
   const newPath=moved ? patch.moveTo : oldPath, newCat=(!moved && patch.cat && ref.parent===undefined) ? patch.cat : ref.cat;
-  const fix = (patch.text!==ref.text || moved || newCat!==ref.cat) ? runsRenamer(ref.cat, oldPath, ref.text, newCat, newPath, patch.text) : null;
-  const touches = fix && S.runs.some(r=>runOpen(r) && r.cat===ref.cat && (r.task===ref.text || runPath(r).includes(ref.text)));
+  const fixers=[];
+  if(patch.text!==ref.text || moved || newCat!==ref.cat) fixers.push(runsRenamer(ref.cat, oldPath, ref.text, newCat, newPath, patch.text));
+  // 編集画面でサブタスクの名前を変えたときも、そのサブタスク（と下のタスク）の実行の記録を合わせる（上の書き換えのあとの置き場所で探す）
+  const here=[...newPath, patch.text];
+  for(const rn of patch.subRenames||[]) fixers.push(runsRenamer(newCat, here, rn.from, newCat, here, rn.to));
+  const fix = runs=>{ let hit=false; for(const f of fixers) if(f(runs)!==false) hit=true; if(!hit) return false; };
+  const touches = fixers.length>0 && fix(JSON.parse(JSON.stringify(S.runs)))!==false;
   enqueue('更新しました', ()=>{ fn(S.sections); if(touches) fix(S.runs); }, async ()=>{
     await opsTodo(fn, `dashboard: 「${patch.text}」を更新`);
     if(touches) await runsFile(fix, `dashboard: 「${patch.text}」の実行の記録を合わせる`).catch(e=>{ if(!e.gone) throw e; });
@@ -1122,7 +1127,7 @@ function viewSetup(){ return `<div class="wrap"><div class="setup"><h1>Action OS
 
 function openEdit(ref){
   const f=findTask(S.sections, ref); if(!f) return;
-  S.modal={type:'edit', ref, draft:{text:f.task.text, cat:ref.cat, due:f.task.due||'', prio:f.task.prio, subs:(f.task.subs||[]).map(s=>({...s})), moveTo:JSON.stringify(refPath(ref))}};
+  S.modal={type:'edit', ref, draft:{text:f.task.text, cat:ref.cat, due:f.task.due||'', prio:f.task.prio, subs:(f.task.subs||[]).map(s=>({...s, orig:s.text})), moveTo:JSON.stringify(refPath(ref))}};
   render();
 }
 function syncDraft(){
@@ -1188,10 +1193,11 @@ document.addEventListener('submit', async e=>{
   if(a==='save-task'){
     syncDraft(); const m=S.modal, d=m.draft; const text=d.text.replace(/📅|🔺/g,'').trim(); if(!text) return;
     if(d.newsub && d.newsub.trim()) d.subs.push({text:d.newsub.trim(),due:null,prio:false});
-    const subs=d.subs.filter(s=>s.text.trim()).map(s=>({...s,text:s.text.trim(),subs:s.subs||[]}));  // 孫以下はそのまま残す
+    const subs=d.subs.filter(s=>s.text.trim()).map(({orig,...s})=>({...s,text:s.text.trim(),subs:s.subs||[]}));  // 孫以下はそのまま残す
+    const subRenames=d.subs.filter(s=>s.orig!==undefined && s.text.trim() && s.text.trim()!==s.orig).map(s=>({from:s.orig, to:s.text.trim()}));  // 名前を変えたサブタスク
     S.modal=null; render();
     if(m.type==='add') addTask(d.cat, {text, due:d.due||null, prio:d.prio});
-    else { let moveTo=null; try{ moveTo=JSON.parse(d.moveTo||'null'); }catch{} updateTask(m.ref, {text, due:d.due||null, prio:d.prio, cat:d.cat, subs, moveTo}); }
+    else { let moveTo=null; try{ moveTo=JSON.parse(d.moveTo||'null'); }catch{} updateTask(m.ref, {text, due:d.due||null, prio:d.prio, cat:d.cat, subs, moveTo, subRenames}); }
   }
   if(a==='save-settings'){
     const repo=f.repo.value.trim(); const token=f.token.value.trim()||safeGet(LS.token);
