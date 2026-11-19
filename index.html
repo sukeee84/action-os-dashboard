@@ -667,6 +667,14 @@ function subContext(r){
   if(r.parent_session) t+=`\n親タスクのスレッドの会話記録: ${sessionLog(r.parent_session)}\n経緯が分からないところがあるときだけ、この記録から必要な部分を探して読んでください（長いので全部は読まない）。`;
   return t;
 }
+// 下にサブタスクがあるタスクの進め方と完了の仕方（親の行を先に消すと、残ったサブタスクが1段上にずれるため）
+function subsRule(r, who){
+  if(!(r.subs && r.subs.length)) return '';
+  return `${who}の下にはサブタスクがあります（上の一覧）。進め方と完了の仕方:
+- どのサブタスクから・どの順で進めるかを提案し、合意したものを1つずつ進める（全部を一度に進めない）。
+- サブタスクが1つ終わるたびに、そのサブタスクを完了にしてよいか確認する。了承されたら、そのサブタスクの行だけを todo.md から消し（その下にさらに行があれば一緒に消す）、done/YYYY-MM.md に「- [x] サブタスク名（${r.task}） ✅YYYY-MM-DD」を1行足して、その2つだけをコミットして push する。
+- ${who}自体の行を完了にするのは、下のサブタスクがすべて片付いてから。下に行が残っているうちは${who}の行を消さない（消すと、残った行が1段上にずれる）。残っているのに終えたいと言われたら、残りをどうするか（一緒に完了にする・残しておく）を確認する。`;
+}
 function buildPrompt(r){
   const lines=[`タスク: ${r.task}`]; if(r.parent) lines.push(`親タスク: ${r.parent}`); if(r.path && r.path.length>1) lines.push(`上の階層（いちばん上から）: ${r.path.join(' ＞ ')}`); if(r.cat) lines.push(`カテゴリ: ${r.cat}`); if(r.due) lines.push(`期限: ${r.due}`);
   if(r.parent && r.parent_due) lines.push(`親タスクの期限: ${r.parent_due}`);
@@ -675,7 +683,7 @@ function buildPrompt(r){
     const log = sessionLog(r.prev_session);
     return `【Action OS から】（実行ID: ${r.id||''}）前のスレッドの続きです。前のスレッドは途中で止まったので、このスレッドで引き継ぎます。
 
-${lines.join('\n')}${subContext(r)}
+${lines.join('\n')}${subContext(r)}${r.subs&&r.subs.length?`\n\n${subsRule(r,'このタスク')}`:''}
 
 前のスレッドの会話記録: ${log}
 まずこの記録を読み、どこまで進んで何が決まっていたか（集めた数字・ユーザーの指示・やりかけの作業）を短くまとめてから、続きを進めてください。${r.note?`\n\nユーザーからの指示: ${r.note}`:''}
@@ -684,7 +692,7 @@ ${RULES}`;
   }
   return `【Action OS から】（実行ID: ${r.id||''}）この${r.parent?'サブタスク':'タスク'}を、ユーザーと相談しながら進めてください。
 
-${lines.join('\n')}${subContext(r)}${r.note?`\n\n補足（ユーザーより）: ${r.note}`:''}
+${lines.join('\n')}${subContext(r)}${r.subs&&r.subs.length?`\n\n${subsRule(r,'このタスク')}`:''}${r.note?`\n\n補足（ユーザーより）: ${r.note}`:''}
 
 ${RULES}
 
@@ -705,7 +713,7 @@ ${lines.join('\n')}${r.note?`\n補足（ユーザーより）: ${r.note}`:''}${r
 - 指示書の1行目に、次の1行をそのまま入れる（ダッシュボードが子スレッドの進み具合を追う目印）:
 【Action OS から】（実行ID: ${r.id}）
 - 指示書には次も入れる: 状況の確認 → 案の提案 → 進め方の確認 → 実行 の順で、ユーザーと相談しながら進める／作業はこのサブタスクの範囲にとどめる／外部への送信・公開は、送る内容を見せてはっきり了承を得てから行う／作業中に新しく出てきたタスクは勝手に登録せず、区切りで提案する／終わったら、やったこと・成果物の場所・残っていることをまとめ「Action OS のサブタスクを完了にして、このスレッドもアーカイブしますか？」と1回で確認し（完了だけ・どちらもまだ、も選べるように）、完了を了承されたら ~/dev/action-os で完了処理（todo.md からその行を消し、done/YYYY-MM.md に完了ログを1行足し、その2つだけをコミットして push）まで行い、アーカイブも了承されたら、そのあと子スレッド自身をアーカイブする（archive_session に "self" を渡す。削除はしない）。
-- 立てたら、このスレッドでは立てたことを1行で報告するだけにし、サブタスクの作業はこのスレッドでは進めない。`;
+${r.subs&&r.subs.length?`- このサブタスクの下にはさらにサブタスクがあるので、指示書には次の決まりもそのまま入れる:\n${subsRule(r,'このサブタスク').replace(/^/gm,'  ')}\n`:''}- 立てたら、このスレッドでは立てたことを1行で報告するだけにし、サブタスクの作業はこのスレッドでは進めない。`;
 }
 function parentLink(r){ return 'claude://code/continue?'+new URLSearchParams({session:r.parent_local}).toString(); }
 // 押した瞬間にその場でコピーする（デスクトップアプリへ移ったあとはコピーできないことがあるため）
