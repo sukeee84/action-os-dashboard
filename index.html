@@ -190,6 +190,12 @@ main.wrap,header .wrap{max-width:1080px}
 .ttext{flex:1;min-width:0}
 .meta{margin-top:0;flex:none;justify-content:flex-end}
 .chk{margin-top:0}
+/* タスクのメモ（表題の下の箇条書き） */
+.tnotes{margin:5px 0 0;padding:0 0 0 1.15em;font-size:12.5px;line-height:1.55;color:var(--sub)}
+.tnotes li{word-break:break-word}
+.tnotes li.more{list-style:none;margin-left:-1.15em;color:var(--faint)}
+.task.hasnotes,.task.hasnotes .tbody{align-items:flex-start}
+.task.hasnotes .runbtn{align-self:flex-start}
 .quick{padding:6px 0 0}
 .quick input{border:1px dashed var(--line);background:transparent;border-radius:12px;padding:11px 14px;font-size:14px}
 .addcat{border-radius:12px;padding:0}
@@ -333,6 +339,9 @@ function parseBody(s){
   if(s.includes('🔺')){ prio=true; s=s.replace(/🔺/g,''); }
   return {text:s.replace(/\s+/g,' ').trim(), due, prio};
 }
+// メモの1行を整える（頭の「- 」「・」を外す。「[ ] 」で始まるとサブタスクと区別できなくなるので外す）
+function cleanNote(l){ return String(l).trim().replace(/^(?:[-*+]\s+|[・•]\s*)/,'').replace(/^\[[ xX]\]\s*/,'').trim(); }
+const notesOf = s => String(s||'').replace(/\r/g,'').split('\n').map(cleanNote).filter(Boolean);
 function fmtTask(t, indent=''){
   return `${indent}- [ ] ${t.text}${t.due?` 📅${t.due}`:''}${t.prio?' 🔺':''}`;
 }
@@ -344,13 +353,20 @@ function parseTodo(text){
     if(!cur) continue;
     const m=line.match(TASK_RE);
     if(m){
-      const t={...parseBody(m[3]), subs:[]};
+      const t={...parseBody(m[3]), notes:[], subs:[]};
       const d=Math.floor(m[1].replace(/\t/g,'  ').length/2);
       if(d>0 && stack.length){
         const pd=Math.min(d,stack.length)-1;
         stack[pd].subs.push(t); stack.length=pd+1; stack.push(t); continue;
       }
       cur.items.push(t); stack=[t]; continue;
+    }
+    // タスクの下の、チェックの無い字下げした行はそのタスクのメモ（何段目のタスクにも付く）
+    const n=line.match(/^(\s+)\S/);
+    if(n && stack.length){
+      const d=Math.max(1, Math.floor(n[1].replace(/\t/g,'  ').length/2));
+      const note=cleanNote(line); if(note) stack[Math.min(d,stack.length)-1].notes.push(note);
+      continue;
     }
     if(line.trim()) cur.items.push({raw:line});
   }
@@ -367,7 +383,7 @@ function serializeTodo(sections){
       out+='\n';
       for(const it of s.items){
         if(it.raw!==undefined){ out+=it.raw+'\n'; continue; }
-        const put=(t,d)=>{ out+=fmtTask(t,'  '.repeat(d))+'\n'; for(const st of t.subs||[]) put(st,d+1); };
+        const put=(t,d)=>{ out+=fmtTask(t,'  '.repeat(d))+'\n'; for(const n of t.notes||[]) out+=`${'  '.repeat(d+1)}- ${n}\n`; for(const st of t.subs||[]) put(st,d+1); };
         put(it,0);
       }
     }
@@ -513,8 +529,8 @@ const removeRef = ref => s => { const f=findTask(s,ref); if(!f) return false; f.
 function addTask(cat, t, parentText){
   const fn=s=>{
     const sec=s.find(x=>x.name===cat);
-    if(parentText!==undefined){ const p=sec.items.find(i=>i.text===parentText); if(!p) return false; p.subs.push({...t,subs:[]}); }
-    else sec.items.push({...t,subs:[]});
+    if(parentText!==undefined){ const p=sec.items.find(i=>i.text===parentText); if(!p) return false; p.subs.push({...t,notes:[...(t.notes||[])],subs:[]}); }
+    else sec.items.push({...t,notes:[...(t.notes||[])],subs:[]});
   };
   enqueue('追加しました', ()=>fn(S.sections), ()=>opsTodo(fn, `dashboard: 「${t.text}」を${cat}に追加`));
 }
@@ -525,12 +541,13 @@ function completeTask(ref){
   // （下にあるサブタスクの実行も閉じる）
   const below=[...refPath(ref), ref.text];
   const openRuns = S.runs.filter(r=>runOpen(r) && (runIs(r,ref) || (r.cat===ref.cat && samePath(runPath(r).slice(0,below.length), below)))).map(r=>r.id);
+  const notes = findTask(S.sections, ref)?.task.notes || [];  // メモは完了ログのタスクの行の下に写す
   enqueue('完了にしました', ()=>{ removeRef(ref)(S.sections); (S.done[ym]=S.done[ym]||[]).push({text:label,date:today}); for(const id of openRuns) patchRun(id,{status:'closed'})(S.runs); }, async ()=>{
     if(openRuns.length) await runsFile(runs=>{ let hit=false; for(const id of openRuns){ if(patchRun(id,{status:'closed'})(runs)!==false) hit=true; } if(!hit) return false; }, `dashboard: 「${label}」の実行を閉じる`).catch(e=>{ if(!e.gone) throw e; });
     await opsTodo(removeRef(ref), `dashboard: 「${label}」を完了`);
     await mutateFile(`done/${ym}.md`, t=>{
       let body=t||`# ${ym} 完了ログ\n`; if(!body.endsWith('\n')) body+='\n';
-      return body+`- [x] ${label} ✅${today}\n`;
+      return body+`- [x] ${label} ✅${today}\n`+notes.map(n=>`  - ${n}\n`).join('');
     }, `dashboard: 「${label}」を完了ログに追加`);
   });
 }
@@ -538,6 +555,7 @@ function updateTask(ref, patch){
   const fn=s=>{
     const f=findTask(s,ref); if(!f) return false;
     Object.assign(f.task, {text:patch.text, due:patch.due, prio:patch.prio});
+    if(patch.notes) f.task.notes=[...patch.notes];
     if(patch.subs) f.task.subs=JSON.parse(JSON.stringify(patch.subs));
     // 親タスクを変える（同じカテゴリの中で、別のタスクの下へ／いちばん上へ）
     if(patch.moveTo && !samePath(patch.moveTo, refPath(ref))){
@@ -582,9 +600,11 @@ function deleteTask(ref){
   enqueue('削除しました', ()=>removeRef(ref)(S.sections), ()=>opsTodo(removeRef(ref), `dashboard: 「${ref.text}」を削除`));
 }
 function toSomeday(ref){
-  enqueue('いつかやるに移しました', ()=>{ removeRef(ref)(S.sections); S.someday.push(ref.text); }, async ()=>{
+  const notes = findTask(S.sections, ref)?.task.notes || [];
+  const item = notes.length ? `${ref.text}（メモ: ${notes.join(' ／ ')}）` : ref.text;  // いつかやるは1行ずつなので、メモは後ろに付けて残す
+  enqueue('いつかやるに移しました', ()=>{ removeRef(ref)(S.sections); S.someday.push(item); }, async ()=>{
     await opsTodo(removeRef(ref), `dashboard: 「${ref.text}」をいつかやるへ移動`);
-    await somedayFile(pushSome(ref.text), `dashboard: 「${ref.text}」をいつかやるに追加`);
+    await somedayFile(pushSome(item), `dashboard: 「${ref.text}」をいつかやるに追加`);
   });
 }
 function addSomeday(text){
@@ -706,6 +726,7 @@ function buildPrompt(r){
   const lines=[`タスク: ${r.task}`]; if(r.parent) lines.push(`親タスク: ${r.parent}`); if(r.path && r.path.length>1) lines.push(`上の階層（いちばん上から）: ${r.path.join(' ＞ ')}`); if(r.cat) lines.push(`カテゴリ: ${r.cat}`); if(r.due) lines.push(`期限: ${r.due}`);
   if(r.parent && r.parent_due) lines.push(`親タスクの期限: ${r.parent_due}`);
   for(const x of r.subs||[]) lines.push(`  - サブタスク: ${x}`);
+  if(r.notes && r.notes.length){ lines.push('メモ:'); for(const x of r.notes) lines.push(`  - ${x}`); }
   if(r.prev_session){
     const log = sessionLog(r.prev_session);
     return `【Action OS から】（実行ID: ${r.id||''}）前のスレッドの続きです。前のスレッドは途中で止まったので、このスレッドで引き継ぎます。
@@ -730,6 +751,7 @@ ${RULES}
 function buildParentAsk(r){
   const lines=[`サブタスク: ${r.task}`]; if(r.path && r.path.length>1) lines.push(`上の階層（いちばん上から）: ${r.path.join(' ＞ ')}`); if(r.cat) lines.push(`カテゴリ: ${r.cat}`); if(r.due) lines.push(`期限: ${r.due}`);
   for(const x of r.subs||[]) lines.push(`  - その下のサブタスク: ${x}`);
+  if(r.notes && r.notes.length){ lines.push('メモ:'); for(const x of r.notes) lines.push(`  - ${x}`); }
   return `【Action OS から】（実行ID: ${r.id}）ダッシュボードの ▶ で、このスレッドのタスクの下にあるサブタスクを頼まれました。このスレッドのサイドセッション（子スレッド）として立ててください。
 
 ${lines.join('\n')}${r.note?`\n補足（ユーザーより）: ${r.note}`:''}${r.near_session?`\n\n途中の親タスク「${r.near_task}」にも別のスレッドがあります。その会話記録: ${sessionLog(r.near_session)}\n指示書を書くときに経緯が足りなければ、この記録から必要な部分だけ探して読んでください（長いので全部は読まない）。`:''}
@@ -768,6 +790,7 @@ function startRun(ref, note, extra={}){
   const sub = ref.parent!==undefined;
   const run={id:'r'+Date.now().toString(36)+Math.random().toString(36).slice(2,6), task:ref.text, cat:ref.cat, due:f?.task.due||null,
     subs:(f?.task.subs||[]).map(x=>x.text), note:note||null, created:nowJst(), updated:nowJst(), ...extra};
+  if(f?.task.notes?.length) run.notes=[...f.task.notes];
   if(sub){
     run.parent=ref.parent; run.parent_due=f?.parent.due||null;
     if(refPath(ref).length>1) run.path=[...refPath(ref)];
@@ -950,10 +973,12 @@ function taskRow(cat, t, opts={}){
   else if(run) meta.push(run.url && run.status==='thread'
     ? `<a class="chip run ${RUN_ST[run.status].cls}" href="${esc(run.url)}" target="_blank" rel="noopener">${icon('play')}${RUN_ST[run.status].label}・開く</a>`
     : `<span class="chip run ${RUN_ST[run.status].cls}" data-act="tab" data-k="runs">${icon('play')}${RUN_ST[run.status].label}</span>`);
-  let h=`<div class="task${sub?' sub':''}"${sub?` style="--d:${path.length}"`:''}>
+  const notes=t.notes||[], NOTE_MAX=3;
+  const notesHtml = notes.length ? `<ul class="tnotes">${notes.slice(0,NOTE_MAX).map(n=>`<li>${esc(n)}</li>`).join('')}${notes.length>NOTE_MAX?`<li class="more">ほか ${notes.length-NOTE_MAX}行</li>`:''}</ul>` : '';
+  let h=`<div class="task${sub?' sub':''}${notes.length?' hasnotes':''}"${sub?` style="--d:${path.length}"`:''}>
     <button class="chk" title="完了にする" data-act="done" data-ref='${esc(JSON.stringify(ref))}' >${icon('check')}</button>
     <div class="tbody" data-act="edit" data-ref='${esc(JSON.stringify(ref))}'>
-      <div class="ttext">${esc(t.text)}</div>${meta.length?`<div class="meta">${meta.join('')}</div>`:''}
+      <div class="ttext">${esc(t.text)}${notesHtml}</div>${meta.length?`<div class="meta">${meta.join('')}</div>`:''}
     </div>${!run&&IS_MAC_DESKTOP?`<button class="runbtn" title="${sub?'このサブタスクを Claude で実行':'Claude で実行'}" data-act="run-open" data-ref='${esc(JSON.stringify(ref))}'>${icon('play')}</button>`:''}</div>`;
   if(!opts.flat && open) for(const st of kids) h+=taskRow(cat, st, {path:[...path, t.text]});
   return h;
@@ -1063,7 +1088,8 @@ function viewModal(){
   const quickDates=[['今日',todayStr()],['明日',addDays(todayStr(),1)],['金曜',nextWeekday(5)],['来週月曜',nextWeekday(1,1)],['なし','']];
   return `<div class="ov" data-act="close-ov"><form class="modal" data-act="save-task">
     <h2>${isEdit?(m.ref.parent!==undefined?'サブタスクを編集':'タスクを編集'):'タスクを追加'}</h2>
-    <div class="field"><label>内容</label><input class="inp" name="text" value="${esc(d.text)}" required autocomplete="off" ${isEdit?'':'autofocus'}></div>
+    <div class="field"><label>表題</label><input class="inp" name="text" value="${esc(d.text)}" required autocomplete="off" ${isEdit?'':'autofocus'}></div>
+    <div class="field"><label>メモ（箇条書き・追記。1行に1つ）</label><textarea class="inp" name="notes" rows="4" placeholder="例：先方に確認済み&#10;資料は共有フォルダの〇〇">${esc(d.notes||'')}</textarea></div>
     ${m.ref&&m.ref.parent!==undefined?'':`<div class="field"><label>カテゴリ</label><div class="seg">${catNames().map(c=>`<button type="button" class="${d.cat===c?'on':''}" data-act="set" data-f="cat" data-v="${esc(c)}">${esc(c)}</button>`).join('')}</div></div>`}
     <div class="field"><label>期限</label>
       <input class="inp" type="date" name="due" value="${esc(d.due||'')}">
@@ -1127,12 +1153,12 @@ function viewSetup(){ return `<div class="wrap"><div class="setup"><h1>Action OS
 
 function openEdit(ref){
   const f=findTask(S.sections, ref); if(!f) return;
-  S.modal={type:'edit', ref, draft:{text:f.task.text, cat:ref.cat, due:f.task.due||'', prio:f.task.prio, subs:(f.task.subs||[]).map(s=>({...s, orig:s.text})), moveTo:JSON.stringify(refPath(ref))}};
+  S.modal={type:'edit', ref, draft:{text:f.task.text, notes:(f.task.notes||[]).join('\n'), cat:ref.cat, due:f.task.due||'', prio:f.task.prio, subs:(f.task.subs||[]).map(s=>({...s, orig:s.text})), moveTo:JSON.stringify(refPath(ref))}};
   render();
 }
 function syncDraft(){
   const m=S.modal; if(!m||!m.draft) return; const form=document.querySelector('form[data-act="save-task"]'); if(!form) return;
-  m.draft.text=form.text.value; m.draft.due=form.due.value;
+  m.draft.text=form.text.value; m.draft.due=form.due.value; if(form.notes) m.draft.notes=form.notes.value;
   form.querySelectorAll('[data-sub]').forEach(i=>{ m.draft.subs[+i.dataset.sub].text=i.value; });
   const ns=form.querySelector('[data-newsub]'); m.draft.newsub=ns?ns.value:'';
   if(form.moveto) m.draft.moveTo=form.moveto.value;
@@ -1152,7 +1178,7 @@ document.addEventListener('click', async e=>{
     case 'reload': if(qRunning||Q.length){ toast('保存中です。少し待ってから更新してください'); break; } loadAll(); break;
     case 'settings': S.modal={type:'settings'}; render(); break;
     case 'logout': safeSet(LS.token,null); S.be=null; S.modal=null; render(); break;
-    case 'add': S.modal={type:'add', draft:{text:'', cat:INBOX, due:'', prio:false, subs:[]}}; render(); break;
+    case 'add': S.modal={type:'add', draft:{text:'', notes:'', cat:INBOX, due:'', prio:false, subs:[]}}; render(); break;
     case 'close': S.modal=null; render(); break;
     case 'done': { const row=el.closest('.task'); row&&(row.style.opacity='.35'); completeTask(ref); break; }
     case 'edit': openEdit(ref); break;
@@ -1196,8 +1222,9 @@ document.addEventListener('submit', async e=>{
     const subs=d.subs.filter(s=>s.text.trim()).map(({orig,...s})=>({...s,text:s.text.trim(),subs:s.subs||[]}));  // 孫以下はそのまま残す
     const subRenames=d.subs.filter(s=>s.orig!==undefined && s.text.trim() && s.text.trim()!==s.orig).map(s=>({from:s.orig, to:s.text.trim()}));  // 名前を変えたサブタスク
     S.modal=null; render();
-    if(m.type==='add') addTask(d.cat, {text, due:d.due||null, prio:d.prio});
-    else { let moveTo=null; try{ moveTo=JSON.parse(d.moveTo||'null'); }catch{} updateTask(m.ref, {text, due:d.due||null, prio:d.prio, cat:d.cat, subs, moveTo, subRenames}); }
+    const notes=notesOf(d.notes);
+    if(m.type==='add') addTask(d.cat, {text, due:d.due||null, prio:d.prio, notes});
+    else { let moveTo=null; try{ moveTo=JSON.parse(d.moveTo||'null'); }catch{} updateTask(m.ref, {text, due:d.due||null, prio:d.prio, cat:d.cat, notes, subs, moveTo, subRenames}); }
   }
   if(a==='save-settings'){
     const repo=f.repo.value.trim(); const token=f.token.value.trim()||safeGet(LS.token);
